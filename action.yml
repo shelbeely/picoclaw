@@ -1,0 +1,247 @@
+name: 'PicoClaw AI Agent'
+description: >
+  Run the PicoClaw AI agent to perform a task and return its text response.
+  Supports any OpenAI-compatible provider, including OpenRouter free-tier models.
+  Built-in rate-limit delay helps stay within free-tier request caps.
+author: 'shelbeely'
+
+branding:
+  icon: 'cpu'
+  color: 'blue'
+
+# ---------------------------------------------------------------------------
+# Inputs
+# ---------------------------------------------------------------------------
+inputs:
+  message:
+    description: 'Task or prompt to send to the agent.'
+    required: true
+
+  model:
+    description: >
+      Full model identifier in "provider/model-id" format, e.g.:
+        anthropic/claude-3-5-haiku-20241022
+        openai/gpt-4o
+        openrouter/meta-llama/llama-3.1-8b-instruct:free
+        deepseek/deepseek-chat
+      Append ":free" for OpenRouter free-tier variants.
+    required: false
+    default: 'openrouter/meta-llama/llama-3.1-8b-instruct:free'
+
+  api_key:
+    description: >
+      API key for the selected provider.
+      For OpenRouter pass your OpenRouter key here
+      (secrets.OPENROUTER_API_KEY or secrets.AI_API_KEY).
+    required: true
+
+  api_base:
+    description: 'Override the provider API base URL (leave blank to use the built-in default).'
+    required: false
+    default: ''
+
+  workspace_dir:
+    description: >
+      Agent workspace directory used for memory, notes, and skills.
+      Defaults to a temporary directory inside RUNNER_TEMP.
+    required: false
+    default: ''
+
+  session:
+    description: 'Session key used to scope conversation history.'
+    required: false
+    default: 'actions:default'
+
+  rate_limit_delay:
+    description: >
+      Seconds to sleep before issuing the first API call.
+      Helps stay within provider rate limits.
+      When set to "auto" (default), the action applies 3 s automatically for
+      any model whose ID ends in ":free" (OpenRouter free tier) and 0 s for
+      everything else.  Set an explicit integer to override.
+    required: false
+    default: 'auto'
+
+# ---------------------------------------------------------------------------
+# Outputs
+# ---------------------------------------------------------------------------
+outputs:
+  response:
+    description: 'The agent text response (ANSI codes and logo prefix stripped).'
+    value: ${{ steps.run-agent.outputs.response }}
+
+# ---------------------------------------------------------------------------
+# Implementation – composite action
+# ---------------------------------------------------------------------------
+runs:
+  using: 'composite'
+  steps:
+
+    # ── 1. Go toolchain (module cache keeps subsequent builds fast) ──────────
+    - name: Setup Go
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: ${{ github.action_path }}/go.mod
+        cache: true
+
+    # ── 2. Build the picoclaw binary ─────────────────────────────────────────
+    - name: Build picoclaw
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: go build -o "$RUNNER_TEMP/picoclaw" ./cmd/picoclaw
+
+    # ── 3. Generate a minimal config.json via jq ─────────────────────────────
+    #
+    #  jq is pre-installed on every GitHub-hosted Ubuntu / macOS runner.
+    #  Using jq avoids Python heredoc indentation issues that break YAML
+    #  block scalars.
+    #
+    #  Default API base URLs per provider prefix:
+    #    anthropic  → https://api.anthropic.com/v1
+    #    openai     → https://api.openai.com/v1
+    #    openrouter → https://openrouter.ai/api/v1
+    #    deepseek   → https://api.deepseek.com/v1
+    #    groq       → https://api.groq.com/openai/v1
+    #    gemini     → https://generativelanguage.googleapis.com/v1beta
+    #    mistral    → https://api.mistral.ai/v1
+    - name: Write agent config
+      shell: bash
+      env:
+        INPUT_MODEL:     ${{ inputs.model }}
+        INPUT_API_KEY:   ${{ inputs.api_key }}
+        INPUT_API_BASE:  ${{ inputs.api_base }}
+        INPUT_WORKSPACE: ${{ inputs.workspace_dir }}
+      run: |
+        CONFIG_DIR="$RUNNER_TEMP/picoclaw-cfg"
+        mkdir -p "$CONFIG_DIR"
+
+        MODEL="$INPUT_MODEL"
+        API_KEY="$INPUT_API_KEY"
+        API_BASE="${INPUT_API_BASE:-}"
+        WORKSPACE="${INPUT_WORKSPACE:-$CONFIG_DIR/workspace}"
+
+        # Split "provider/model-id[:free]" → PROVIDER and MODEL_ID
+        if [[ "$MODEL" == */* ]]; then
+          PROVIDER="${MODEL%%/*}"
+          MODEL_ID="${MODEL#*/}"
+        else
+          PROVIDER="$MODEL"
+          MODEL_ID="$MODEL"
+        fi
+
+        # Resolve default API base when caller did not override it
+        if [ -z "$API_BASE" ]; then
+          case "$PROVIDER" in
+            anthropic)  API_BASE="https://api.anthropic.com/v1" ;;
+            openai)     API_BASE="https://api.openai.com/v1" ;;
+            openrouter) API_BASE="https://openrouter.ai/api/v1" ;;
+            deepseek)   API_BASE="https://api.deepseek.com/v1" ;;
+            groq)       API_BASE="https://api.groq.com/openai/v1" ;;
+            gemini)     API_BASE="https://generativelanguage.googleapis.com/v1beta" ;;
+            mistral)    API_BASE="https://api.mistral.ai/v1" ;;
+            *)          API_BASE="" ;;
+          esac
+        fi
+
+        # Write config.json — jq handles quoting/escaping safely
+        jq -n \
+          --arg workspace  "$WORKSPACE" \
+          --arg model_name "$MODEL_ID" \
+          --arg model      "$MODEL" \
+          --arg api_key    "$API_KEY" \
+          --arg api_base   "$API_BASE" \
+          '{
+            agents: {
+              defaults: {
+                workspace:           $workspace,
+                model_name:          $model_name,
+                max_tokens:          8192,
+                max_tool_iterations: 20
+              }
+            },
+            model_list: [{
+              model_name: $model_name,
+              model:      $model,
+              api_key:    $api_key,
+              api_base:   $api_base
+            }],
+            tools: {
+              web:        {enabled: true,  duckduckgo: {enabled: true, max_results: 5}},
+              exec:       {enabled: true,  enable_deny_patterns: true},
+              read_file:  {enabled: true},
+              write_file: {enabled: true},
+              list_dir:   {enabled: true}
+            },
+            channels:  {},
+            heartbeat: {enabled: false},
+            devices:   {enabled: false}
+          }' > "$CONFIG_DIR/config.json"
+
+        echo "PICOCLAW_CONFIG=$CONFIG_DIR/config.json" >> "$GITHUB_ENV"
+        echo "PICOCLAW_HOME=$CONFIG_DIR"              >> "$GITHUB_ENV"
+        echo "Config written: $CONFIG_DIR/config.json"
+
+    # ── 4. Enforce rate-limit delay before the first API call ────────────────
+    #
+    #  OpenRouter free-tier limits (model IDs ending in ":free"):
+    #    • 20 requests / minute
+    #    • 50 requests / day  (< 10 credits purchased)
+    #    • 1 000 requests / day (≥ 10 credits purchased)
+    #
+    #  "auto" mode sleeps 3 s for :free models, 0 s for everything else.
+    #  Set rate_limit_delay to an explicit integer to override.
+    - name: Rate-limit delay
+      shell: bash
+      env:
+        INPUT_MODEL:             ${{ inputs.model }}
+        INPUT_RATE_LIMIT_DELAY:  ${{ inputs.rate_limit_delay }}
+      run: |
+        DELAY="$INPUT_RATE_LIMIT_DELAY"
+
+        if [ "$DELAY" = "auto" ]; then
+          if [[ "$INPUT_MODEL" == *":free"* ]]; then
+            DELAY=3
+            echo "::notice::Free-tier model detected — applying 3 s rate-limit delay."
+          else
+            DELAY=0
+          fi
+        fi
+
+        if [ "$DELAY" -gt 0 ] 2>/dev/null; then
+          echo "Sleeping ${DELAY}s before API call…"
+          sleep "$DELAY"
+        fi
+
+    # ── 5. Run the agent in one-shot (--message) mode ───────────────────────
+    - name: Run agent
+      id: run-agent
+      shell: bash
+      env:
+        PICOCLAW_MESSAGE: ${{ inputs.message }}
+        PICOCLAW_SESSION: ${{ inputs.session }}
+      run: |
+        STDERR_LOG="$RUNNER_TEMP/picoclaw-stderr.log"
+
+        RAW=$(
+          "$RUNNER_TEMP/picoclaw" agent \
+            --message "$PICOCLAW_MESSAGE" \
+            --session "$PICOCLAW_SESSION" \
+            2>"$STDERR_LOG"
+        ) || {
+          echo "::error::PicoClaw agent exited with an error — see stderr below"
+          cat "$STDERR_LOG" >&2
+          exit 1
+        }
+
+        # Strip ANSI escape codes, then remove the leading "🦞 " logo prefix
+        CLEAN=$(
+          printf '%s' "$RAW" \
+            | sed 's/\x1B\[[0-9;]*[mGKHFJA-Za-z]//g' \
+            | sed 's/^\s*🦞\s*//'
+        )
+
+        {
+          echo 'response<<_PICOCLAW_EOF_'
+          printf '%s\n' "$CLEAN"
+          echo '_PICOCLAW_EOF_'
+        } >> "$GITHUB_OUTPUT"

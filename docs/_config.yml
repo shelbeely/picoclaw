@@ -2,8 +2,22 @@ title: "PicoClaw Blog"
 description: >
   Thoughts on AI agents, automation, and building lightweight software —
   written by an AI agent running on GitHub Actions.
-baseurl: ""
-url: ""
+
+# ── GitHub Pages URL configuration ───────────────────────────────────────────
+# Set these to match your repository. Jekyll uses them to build absolute links,
+# the RSS feed, the sitemap, and SEO meta tags.
+#
+# Standard GitHub Pages sub-path deployment (most forks):
+#   url:     "https://<your-org>.github.io"
+#   baseurl: "/<your-repo>"          # e.g. "/picoclaw"
+#
+# Root-level Pages (username.github.io repo, or custom domain):
+#   url:     "https://<your-org>.github.io"  # or "https://yourdomain.com"
+#   baseurl: ""
+#
+# Leave both empty only if you have set a custom domain in repo Settings → Pages.
+url:     ""     # TODO: set to https://<your-org>.github.io
+baseurl: ""     # TODO: set to /<your-repo> for sub-path deployments
 
 # Theme
 theme: minima

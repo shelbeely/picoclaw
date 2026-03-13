@@ -1,62 +1,81 @@
 # Blog Writer — GitHub Actions matrix workflow
 #
-# Runs the PicoClaw AI agent in parallel across multiple topics
-# (GitHub Actions matrix strategy) and publishes each generated
-# Jekyll-formatted post to docs/_posts/.
+# Runs one PicoClaw AI agent per topic in parallel (GitHub Actions matrix
+# strategy) and publishes each generated Jekyll post to docs/_posts/.
 #
-# Required repository secret:
-#   AI_API_KEY   — API key for the chosen AI provider
+# ┌─────────────────────────────────────────────────────────────────────┐
+# │ Required secret                                                     │
+# │   OPENROUTER_API_KEY  — your OpenRouter key (preferred)            │
+# │   AI_API_KEY          — fallback for non-OpenRouter providers      │
+# │                                                                     │
+# │ Optional repository variable                                        │
+# │   AI_MODEL  — e.g. openrouter/meta-llama/llama-3.1-8b-instruct:free│
+# └─────────────────────────────────────────────────────────────────────┘
 #
-# Optional repository variable (defaults shown):
-#   AI_MODEL     — e.g. anthropic/claude-3-5-haiku-20241022
+# Rate-limit handling (OpenRouter free tier):
+#   • Free models (:free suffix) → max-parallel: 1, 3 s delay per call
+#     This keeps throughput safely under 20 req/min and conserves the
+#     50–1 000 daily request budget.
+#   • Paid models               → max-parallel: 6, no forced delay.
+#
+# Set free_tier: true in workflow_dispatch (or always-on for schedule) to
+# activate conservative rate limiting automatically.
 
 name: Blog Writer
 
 on:
-  # Run every Monday at 09:00 UTC
   schedule:
-    - cron: '0 9 * * 1'
+    - cron: '0 9 * * 1'   # Every Monday 09:00 UTC
 
-  # Allow manual runs with custom topics / model
   workflow_dispatch:
     inputs:
       topics:
         description: >
-          JSON array of blog topics to write in parallel.
+          JSON array of blog topics. Each entry becomes one parallel matrix job.
           Example: ["AI ethics","Rust vs Go","Open source 2025"]
         required: false
         default: ''
       model:
         description: >
           Model in "provider/model-id" format.
-          Leave blank to use the AI_MODEL variable (or the built-in default).
+          Leave blank to use the AI_MODEL variable.
+          Free-tier example: openrouter/meta-llama/llama-3.1-8b-instruct:free
         required: false
         default: ''
+      free_tier:
+        description: >
+          Set true when using an OpenRouter :free model.
+          Limits parallel jobs to 1 and adds a 3 s delay to respect
+          the 20 req/min and 50–1 000 req/day free-tier caps.
+        required: false
+        default: 'false'
 
-# Only one blog-writer run at a time; a new push cancels the in-progress one.
 concurrency:
   group: blog-writer
   cancel-in-progress: true
 
 jobs:
-  # ── 0. Resolve matrix ─────────────────────────────────────────────────────
-  # Builds the topic list from workflow_dispatch input or falls back to a
-  # default set used by the scheduled run.
+  # ── 0. Resolve matrix + rate-limit parameters ────────────────────────────
   set-matrix:
-    name: Set topic matrix
+    name: Set matrix and rate limits
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
-      topics: ${{ steps.resolve.outputs.topics }}
-      model:  ${{ steps.resolve.outputs.model }}
+      topics:       ${{ steps.resolve.outputs.topics }}
+      model:        ${{ steps.resolve.outputs.model }}
+      max_parallel: ${{ steps.resolve.outputs.max_parallel }}
+      delay:        ${{ steps.resolve.outputs.delay }}
     steps:
-      - name: Resolve topics and model
+      - name: Resolve inputs
         id: resolve
         env:
-          INPUT_TOPICS: ${{ inputs.topics }}
-          INPUT_MODEL:  ${{ inputs.model }}
-          VAR_MODEL:    ${{ vars.AI_MODEL }}
+          INPUT_TOPICS:    ${{ inputs.topics }}
+          INPUT_MODEL:     ${{ inputs.model }}
+          INPUT_FREE_TIER: ${{ inputs.free_tier }}
+          VAR_MODEL:       ${{ vars.AI_MODEL }}
         run: |
-          # ---------- topics ----------
+          # ── topics ──────────────────────────────────────────────────────
           DEFAULT_TOPICS='["The future of AI agents","Open source tools every developer should know","Writing clean code: lessons from the trenches"]'
           if [ -n "$INPUT_TOPICS" ]; then
             echo "topics=$INPUT_TOPICS" >> "$GITHUB_OUTPUT"
@@ -64,18 +83,41 @@ jobs:
             echo "topics=$DEFAULT_TOPICS" >> "$GITHUB_OUTPUT"
           fi
 
-          # ---------- model ----------
-          RESOLVED_MODEL="${INPUT_MODEL:-${VAR_MODEL:-anthropic/claude-3-5-haiku-20241022}}"
+          # ── model ───────────────────────────────────────────────────────
+          RESOLVED_MODEL="${INPUT_MODEL:-${VAR_MODEL:-openrouter/meta-llama/llama-3.1-8b-instruct:free}}"
           echo "model=$RESOLVED_MODEL" >> "$GITHUB_OUTPUT"
 
-  # ── 1. Generate posts (matrix) ────────────────────────────────────────────
-  # One job per topic, all running in parallel.
+          # ── rate-limit parameters ────────────────────────────────────────
+          # Auto-detect free tier if free_tier input is not explicitly set
+          IS_FREE="$INPUT_FREE_TIER"
+          if [ "$IS_FREE" != "true" ] && [[ "$RESOLVED_MODEL" == *":free"* ]]; then
+            IS_FREE="true"
+            echo "::notice::Free-tier model detected — enabling conservative rate limiting."
+          fi
+
+          if [ "$IS_FREE" = "true" ]; then
+            # Serial execution (max-parallel=1) + 3 s delay stays well inside
+            # the 20 req/min cap and preserves the daily request budget.
+            echo "max_parallel=1" >> "$GITHUB_OUTPUT"
+            echo "delay=3"        >> "$GITHUB_OUTPUT"
+          else
+            echo "max_parallel=6" >> "$GITHUB_OUTPUT"
+            echo "delay=0"        >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── 1. Generate posts (matrix — one picoclaw per topic) ──────────────────
   generate:
     name: Write — "${{ matrix.topic }}"
     needs: set-matrix
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
-      fail-fast: false          # keep writing even if one topic fails
+      fail-fast: false
+      # max-parallel is set by set-matrix:
+      #   free tier  → 1  (serial; safe within 20 req/min)
+      #   paid tier  → 6  (parallel; no forced throttle)
+      max-parallel: ${{ fromJson(needs.set-matrix.outputs.max_parallel) }}
       matrix:
         topic: ${{ fromJson(needs.set-matrix.outputs.topics) }}
 
@@ -83,34 +125,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      # Slugify the topic so it can be used in file/artifact names
       - name: Compute slug
         id: slug
         env:
           TOPIC: ${{ matrix.topic }}
         run: |
-          SLUG=$(
-            printf '%s' "$TOPIC" \
-              | tr '[:upper:]' '[:lower:]' \
-              | tr ' /' '--' \
-              | sed 's/[^a-z0-9-]//g' \
-              | sed 's/--*/-/g' \
-              | sed 's/^-//;s/-$//'
-          )
+          SLUG=$(printf '%s' "$TOPIC" \
+            | tr '[:upper:]' '[:lower:]' \
+            | tr ' /' '--' \
+            | sed 's/[^a-z0-9-]//g' \
+            | sed 's/--*/-/g;s/^-//;s/-$//')
           echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
 
-      # Run the PicoClaw action to write the post
-      - name: Write blog post
+      - name: Write blog post (picoclaw)
         id: agent
-        uses: ./                 # <— PicoClaw composite action (this repo)
+        uses: ./
         with:
           message: |
             You are writing a blog post for an AI agent persona's GitHub Pages blog.
 
             Topic: ${{ matrix.topic }}
 
-            Return ONLY the complete, publication-ready Jekyll post. Use this exact
-            front-matter format, then write the Markdown body below it:
+            Return ONLY the complete Jekyll post. Use this exact format:
 
             ---
             layout: post
@@ -123,28 +159,25 @@ jobs:
 
             ## Introduction
 
-            ...body in Markdown...
+            ...body in Markdown (600–1 200 words)...
 
             Replace YYYY-MM-DD HH:MM:SS +0000 with today's UTC date/time.
-            Do NOT include any text before the opening "---" of the front matter.
-          model:   ${{ needs.set-matrix.outputs.model }}
-          api_key: ${{ secrets.AI_API_KEY }}
-          workspace_dir: ${{ github.workspace }}/workspace
-          session: blog-${{ steps.slug.outputs.slug }}
+            Do NOT include any text before the opening "---".
+          model:            ${{ needs.set-matrix.outputs.model }}
+          api_key:          ${{ secrets.OPENROUTER_API_KEY || secrets.AI_API_KEY }}
+          workspace_dir:    ${{ github.workspace }}/workspace
+          session:          blog-${{ steps.slug.outputs.slug }}
+          rate_limit_delay: ${{ needs.set-matrix.outputs.delay }}
 
-      # Persist the post as a workflow artifact so the commit job can collect
-      # all posts in one push (avoids concurrent git-push conflicts).
       - name: Save post artifact
         env:
           POST_CONTENT: ${{ steps.agent.outputs.response }}
-          SLUG: ${{ steps.slug.outputs.slug }}
+          SLUG:         ${{ steps.slug.outputs.slug }}
         run: |
           DATE=$(date -u +%Y-%m-%d)
-          POSTS_DIR="$RUNNER_TEMP/posts"
-          mkdir -p "$POSTS_DIR"
-          FILENAME="${DATE}-${SLUG}.md"
-          printf '%s\n' "$POST_CONTENT" > "$POSTS_DIR/$FILENAME"
-          echo "Saved: $POSTS_DIR/$FILENAME"
+          mkdir -p "$RUNNER_TEMP/posts"
+          printf '%s\n' "$POST_CONTENT" > "$RUNNER_TEMP/posts/${DATE}-${SLUG}.md"
+          echo "Saved: ${DATE}-${SLUG}.md"
 
       - name: Upload post artifact
         uses: actions/upload-artifact@v4
@@ -153,8 +186,7 @@ jobs:
           path: ${{ runner.temp }}/posts/*.md
           if-no-files-found: error
 
-  # ── 2. Commit all posts at once ───────────────────────────────────────────
-  # Runs after every generate job succeeds (or is allowed to fail).
+  # ── 2. Commit all posts at once (avoids concurrent git-push conflicts) ────
   commit:
     name: Commit posts
     needs: generate
@@ -179,11 +211,7 @@ jobs:
       - name: Copy posts into docs/_posts
         run: |
           mkdir -p docs/_posts
-          find "$RUNNER_TEMP/all-posts" -name "*.md" | while read -r f; do
-            echo "Copying: $f"
-            cp "$f" docs/_posts/
-          done
-          echo "--- docs/_posts contents ---"
+          find "$RUNNER_TEMP/all-posts" -name "*.md" -exec cp {} docs/_posts/ \;
           ls -1 docs/_posts/
 
       - name: Commit and push

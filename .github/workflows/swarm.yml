@@ -1,0 +1,463 @@
+# PicoClaw Swarm — multi-stage, multi-agent blog pipeline
+#
+# Four specialised picoclaw agents collaborate via GitHub Actions jobs:
+#
+#   ┌──────────────────────────────────────────────────────┐
+#   │  Job 1 · orchestrate                                 │
+#   │  Plans title, outline, and research questions (JSON) │
+#   └──────────────────────┬───────────────────────────────┘
+#                          │
+#        ┌─────────────────┼─────────────────┐
+#        ▼                 ▼                 ▼   ← matrix (parallel)
+#   ┌─────────┐      ┌─────────┐      ┌─────────┐
+#   │Research │      │Research │      │Research │
+#   │Agent  1 │      │Agent  2 │      │Agent  N │
+#   └────┬────┘      └────┬────┘      └────┬────┘
+#        └────────────────┼────────────────┘
+#                         │
+#                         ▼
+#   ┌──────────────────────────────────────────────────────┐
+#   │  Job 3 · write                                       │
+#   │  Synthesises all research notes into a full draft    │
+#   └──────────────────────┬───────────────────────────────┘
+#                          │
+#                          ▼
+#   ┌──────────────────────────────────────────────────────┐
+#   │  Job 4 · edit                                        │
+#   │  Reviews, polishes, and commits the final post       │
+#   └──────────────────────────────────────────────────────┘
+#
+# ┌─────────────────────────────────────────────────────────────────────┐
+# │ Required secret                                                     │
+# │   OPENROUTER_API_KEY  — your OpenRouter key (preferred)            │
+# │   AI_API_KEY          — fallback for non-OpenRouter providers      │
+# │                                                                     │
+# │ Optional repository variable                                        │
+# │   AI_MODEL  — e.g. openrouter/meta-llama/llama-3.1-8b-instruct:free│
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# Rate-limit handling (OpenRouter free tier):
+#   Free models (:free suffix) → max-parallel: 1 on research matrix, 3 s delay
+#   This stays safely inside the 20 req/min cap and preserves the 50–1 000
+#   req/day daily budget.  Set free_tier: false to disable throttling.
+
+name: PicoClaw Swarm
+
+on:
+  workflow_dispatch:
+    inputs:
+      topic:
+        description: 'Blog post topic for the entire swarm.'
+        required: true
+        default: 'How AI agent swarms are changing software development'
+      research_depth:
+        description: 'Number of parallel research agents (1–6).'
+        required: false
+        default: '3'
+      model:
+        description: >
+          Model in "provider/model-id" format.
+          Leave blank to use AI_MODEL variable.
+          Free-tier example: openrouter/meta-llama/llama-3.1-8b-instruct:free
+        required: false
+        default: ''
+      free_tier:
+        description: >
+          Set true when using an OpenRouter :free model.
+          Limits research matrix to max-parallel: 1 and adds 3 s delays to
+          respect the 20 req/min and 50–1 000 req/day free-tier caps.
+        required: false
+        default: 'false'
+
+concurrency:
+  group: picoclaw-swarm
+  cancel-in-progress: true
+
+# ── Job 1 · Orchestrate ──────────────────────────────────────────────────────
+jobs:
+  orchestrate:
+    name: Orchestrate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      questions:    ${{ steps.parse.outputs.questions }}
+      title:        ${{ steps.parse.outputs.title }}
+      outline:      ${{ steps.parse.outputs.outline }}
+      model:        ${{ steps.limits.outputs.model }}
+      max_parallel: ${{ steps.limits.outputs.max_parallel }}
+      delay:        ${{ steps.limits.outputs.delay }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Resolve model and rate-limit parameters once, share via outputs
+      - name: Resolve model and rate limits
+        id: limits
+        env:
+          INPUT_MODEL:     ${{ inputs.model }}
+          INPUT_FREE_TIER: ${{ inputs.free_tier }}
+          VAR_MODEL:       ${{ vars.AI_MODEL }}
+        run: |
+          RESOLVED="${INPUT_MODEL:-${VAR_MODEL:-openrouter/meta-llama/llama-3.1-8b-instruct:free}}"
+          echo "model=$RESOLVED" >> "$GITHUB_OUTPUT"
+
+          IS_FREE="$INPUT_FREE_TIER"
+          if [ "$IS_FREE" != "true" ] && [[ "$RESOLVED" == *":free"* ]]; then
+            IS_FREE="true"
+            echo "::notice::Free-tier model detected — enabling conservative rate limiting."
+          fi
+
+          if [ "$IS_FREE" = "true" ]; then
+            echo "max_parallel=1" >> "$GITHUB_OUTPUT"
+            echo "delay=3"        >> "$GITHUB_OUTPUT"
+          else
+            echo "max_parallel=6" >> "$GITHUB_OUTPUT"
+            echo "delay=0"        >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Plan post (picoclaw)
+        id: agent
+        uses: ./
+        with:
+          message: |
+            You are an editorial orchestrator planning a blog post.
+
+            Topic: ${{ inputs.topic }}
+            Research agents available: ${{ inputs.research_depth }}
+
+            Output ONLY valid JSON — no prose before or after — using this schema:
+            {
+              "title": "Compelling post title",
+              "outline": "Markdown outline with ## H2 sections and brief bullets",
+              "research_questions": [
+                "Self-contained question 1 answerable by web search",
+                "Self-contained question 2 answerable by web search",
+                "Self-contained question 3 answerable by web search"
+              ]
+            }
+            Provide exactly ${{ inputs.research_depth }} research_questions.
+          model:            ${{ steps.limits.outputs.model }}
+          api_key:          ${{ secrets.OPENROUTER_API_KEY || secrets.AI_API_KEY }}
+          session:          swarm-orchestrate-${{ github.run_id }}
+          rate_limit_delay: ${{ steps.limits.outputs.delay }}
+
+      # Parse the orchestrator's JSON response using jq.
+      # jq is pre-installed on every GitHub-hosted runner and is already used
+      # in action.yml — consistent with the project's Go/no-Python stance.
+      #
+      # Extraction strategy:
+      #   1. Try parsing the whole response as JSON directly (ideal path).
+      #   2. Fall back to extracting the first {...} block with grep -Pzo so
+      #      any surrounding prose the model accidentally included is stripped.
+      - name: Parse plan JSON
+        id: parse
+        env:
+          AGENT_RESPONSE: ${{ steps.agent.outputs.response }}
+        run: |
+          # Step 1: attempt direct parse; step 2: extract embedded JSON block
+          JSON=$(printf '%s' "$AGENT_RESPONSE" | jq -e '.' 2>/dev/null) || \
+          JSON=$(printf '%s' "$AGENT_RESPONSE" \
+                   | grep -Pzo '(?s)\{.*\}' \
+                   | tr -d '\0' \
+                   | jq -e '.')
+
+          if [ -z "$JSON" ]; then
+            echo "::error::No valid JSON object found in orchestrator response"
+            exit 1
+          fi
+
+          # Validate required keys exist
+          for key in title outline research_questions; do
+            if ! printf '%s' "$JSON" | jq -e ".$key" > /dev/null 2>&1; then
+              echo "::error::Missing key in plan JSON: $key"
+              exit 1
+            fi
+          done
+
+          TITLE=$(     printf '%s' "$JSON" | jq -r '.title')
+          QUESTIONS=$( printf '%s' "$JSON" | jq -c '.research_questions')
+
+          echo "title=$TITLE"          >> "$GITHUB_OUTPUT"
+          echo "questions=$QUESTIONS"  >> "$GITHUB_OUTPUT"
+          {
+            echo "outline<<_OUT_EOF_"
+            printf '%s' "$JSON" | jq -r '.outline'
+            echo "_OUT_EOF_"
+          } >> "$GITHUB_OUTPUT"
+
+          # Pretty-print plan to workflow log
+          printf '%s\n' "$JSON" | jq '.'
+
+      - name: Upload plan artifact
+        env:
+          AGENT_RESPONSE: ${{ steps.agent.outputs.response }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/plan"
+          printf '%s\n' "$AGENT_RESPONSE" > "$RUNNER_TEMP/plan/plan.json"
+
+      - name: Upload plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: swarm-plan
+          path: ${{ runner.temp }}/plan/plan.json
+
+  # ── Job 2 · Research matrix (one picoclaw per question) ──────────────────
+  research:
+    name: Research — Q${{ strategy.job-index + 1 }}
+    needs: orchestrate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      # free tier  → max-parallel: 1  (serial, safe within 20 req/min)
+      # paid tier  → max-parallel: 6  (full parallel)
+      max-parallel: ${{ fromJson(needs.orchestrate.outputs.max_parallel) }}
+      matrix:
+        question: ${{ fromJson(needs.orchestrate.outputs.questions) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Compute slug
+        id: slug
+        env:
+          Q: ${{ matrix.question }}
+        run: |
+          SLUG=$(printf '%s' "$Q" \
+            | tr '[:upper:]' '[:lower:]' \
+            | tr ' /' '--' \
+            | sed 's/[^a-z0-9-]//g' \
+            | sed 's/--*/-/g;s/^-//;s/-$//' \
+            | cut -c1-60)
+          echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
+
+      - name: Research question (picoclaw)
+        id: agent
+        uses: ./
+        with:
+          message: |
+            You are a research agent gathering information for a blog post.
+
+            Overall topic: ${{ inputs.topic }}
+
+            Your assigned research question:
+            "${{ matrix.question }}"
+
+            Search the web, gather facts, quotes, and concrete examples.
+            Write 300–500 words of Markdown research notes.
+            Start with a ## heading that restates the question.
+            Include bullet-pointed facts and source links.
+            Do NOT write the full blog post — notes only.
+          model:            ${{ needs.orchestrate.outputs.model }}
+          api_key:          ${{ secrets.OPENROUTER_API_KEY || secrets.AI_API_KEY }}
+          session:          swarm-research-${{ steps.slug.outputs.slug }}-${{ github.run_id }}
+          rate_limit_delay: ${{ needs.orchestrate.outputs.delay }}
+
+      - name: Save research note
+        env:
+          NOTES: ${{ steps.agent.outputs.response }}
+          SLUG:  ${{ steps.slug.outputs.slug }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/research"
+          printf '%s\n' "$NOTES" > "$RUNNER_TEMP/research/${SLUG}.md"
+
+      - name: Upload research note
+        uses: actions/upload-artifact@v4
+        with:
+          name: research-${{ steps.slug.outputs.slug }}
+          path: ${{ runner.temp }}/research/*.md
+          if-no-files-found: error
+
+  # ── Job 3 · Write — synthesise research into a draft ─────────────────────
+  write:
+    name: Write draft
+    needs: [orchestrate, research]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download all research notes
+        uses: actions/download-artifact@v4
+        with:
+          pattern: research-*
+          path: ${{ runner.temp }}/research
+          merge-multiple: true
+
+      # Assemble the full context and capture it as a step output so it can be
+      # safely passed to `uses: ./` via `with.message` (no shell substitution
+      # is allowed inside `with:` blocks in GitHub Actions).
+      - name: Assemble context
+        id: ctx
+        run: |
+          CTX="$RUNNER_TEMP/context.md"
+          {
+            echo "# Post Title"
+            echo "${{ needs.orchestrate.outputs.title }}"
+            echo ""
+            echo "# Outline"
+            echo "${{ needs.orchestrate.outputs.outline }}"
+            echo ""
+            echo "# Research Notes"
+            for f in "$RUNNER_TEMP/research/"*.md; do
+              [ -f "$f" ] || continue
+              echo ""
+              cat "$f"
+              echo ""
+              echo "---"
+            done
+          } > "$CTX"
+          # Store as multiline output for use in the next step's `with:`
+          {
+            echo "content<<_CTX_EOF_"
+            cat "$CTX"
+            echo "_CTX_EOF_"
+          } >> "$GITHUB_OUTPUT"
+          wc -l "$CTX"
+
+      - name: Write draft (picoclaw)
+        id: agent
+        uses: ./
+        with:
+          message: |
+            You are a skilled writer drafting a blog post.
+
+            Use the following title, outline, and research notes — compiled
+            by specialised research agents — to write the full post.
+
+            ${{ steps.ctx.outputs.content }}
+
+            Output ONLY a valid Jekyll post (front matter + Markdown body):
+
+            ---
+            layout: post
+            title: "${{ needs.orchestrate.outputs.title }}"
+            date: YYYY-MM-DD HH:MM:SS +0000
+            categories: [ai, technology]
+            tags: [ai-agents, github-actions, picoclaw]
+            excerpt: "One-sentence hook shown on the blog index."
+            ---
+
+            ## Introduction
+            ...
+
+            Replace YYYY-MM-DD HH:MM:SS +0000 with today's UTC date/time.
+            Do NOT include any text before the opening "---".
+          model:            ${{ needs.orchestrate.outputs.model }}
+          api_key:          ${{ secrets.OPENROUTER_API_KEY || secrets.AI_API_KEY }}
+          session:          swarm-write-${{ github.run_id }}
+          rate_limit_delay: ${{ needs.orchestrate.outputs.delay }}
+
+      - name: Save draft
+        env:
+          DRAFT: ${{ steps.agent.outputs.response }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/draft"
+          printf '%s\n' "$DRAFT" > "$RUNNER_TEMP/draft/draft.md"
+
+      - name: Upload draft
+        uses: actions/upload-artifact@v4
+        with:
+          name: swarm-draft
+          path: ${{ runner.temp }}/draft/draft.md
+          if-no-files-found: error
+
+  # ── Job 4 · Edit — final review, polish, commit ───────────────────────────
+  edit:
+    name: Edit and publish
+    needs: [orchestrate, write]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Download draft
+        uses: actions/download-artifact@v4
+        with:
+          name: swarm-draft
+          path: ${{ runner.temp }}/draft
+
+      # Capture draft as step output to pass into the action's with.message
+      - name: Read draft
+        id: draft
+        run: |
+          {
+            echo "content<<_DRAFT_EOF_"
+            cat "$RUNNER_TEMP/draft/draft.md"
+            echo "_DRAFT_EOF_"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Edit and finalise (picoclaw)
+        id: agent
+        uses: ./
+        with:
+          message: |
+            You are a senior editor reviewing and polishing a blog post draft.
+
+            DRAFT:
+            ${{ steps.draft.outputs.content }}
+
+            Your tasks:
+            1. Fix grammar, spelling, and awkward phrasing.
+            2. Ensure Jekyll front matter is valid YAML with correct UTC timestamp.
+            3. Strengthen the intro hook and conclusion if weak.
+            4. Do not significantly shorten or cut content — only improve it.
+            5. Output ONLY the finalised post. No commentary.
+          model:            ${{ needs.orchestrate.outputs.model }}
+          api_key:          ${{ secrets.OPENROUTER_API_KEY || secrets.AI_API_KEY }}
+          session:          swarm-edit-${{ github.run_id }}
+          rate_limit_delay: ${{ needs.orchestrate.outputs.delay }}
+
+      - name: Save and commit final post
+        id: save
+        env:
+          FINAL: ${{ steps.agent.outputs.response }}
+        run: |
+          DATE=$(date -u +%Y-%m-%d)
+          SLUG=$(printf '%s' "${{ inputs.topic }}" \
+            | tr '[:upper:]' '[:lower:]' \
+            | tr ' /' '--' \
+            | sed 's/[^a-z0-9-]//g' \
+            | sed 's/--*/-/g;s/^-//;s/-$//' \
+            | cut -c1-60)
+          FILENAME="${DATE}-${SLUG}.md"
+          mkdir -p docs/_posts
+          printf '%s\n' "$FINAL" > "docs/_posts/$FILENAME"
+          echo "filename=$FILENAME" >> "$GITHUB_OUTPUT"
+
+          git config user.name  "picoclaw-swarm-bot"
+          git config user.email "picoclaw-swarm-bot@users.noreply.github.com"
+          git add docs/_posts/
+          if git diff --staged --quiet; then
+            echo "Nothing to commit."
+          else
+            git commit -m "🐝 Swarm post: ${{ inputs.topic }} [skip ci]"
+            git push
+          fi
+
+      - name: Job summary
+        run: |
+          {
+            echo "## 🐝 PicoClaw Swarm complete"
+            echo ""
+            echo "| Stage | Agents | Notes |"
+            echo "|-------|--------|-------|"
+            echo "| Orchestrate | 1 | Planned title, outline, ${{ inputs.research_depth }} questions |"
+            echo "| Research | ${{ inputs.research_depth }} (parallel) | max-parallel: ${{ needs.orchestrate.outputs.max_parallel }} |"
+            echo "| Write | 1 | Synthesised research into draft |"
+            echo "| Edit | 1 | Polished and committed |"
+            echo ""
+            echo "**Post:** \`docs/_posts/${{ steps.save.outputs.filename }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
