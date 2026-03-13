@@ -1,0 +1,186 @@
+name: 'PicoClaw AI Agent'
+description: >
+  Run the PicoClaw AI agent to perform a task and return its text response.
+  Perfect for writing blog posts, summarising issues, or any free-form AI work.
+author: 'shelbeely'
+
+branding:
+  icon: 'cpu'
+  color: 'blue'
+
+# ---------------------------------------------------------------------------
+# Inputs
+# ---------------------------------------------------------------------------
+inputs:
+  message:
+    description: 'Task or prompt to send to the agent.'
+    required: true
+
+  model:
+    description: >
+      Full model identifier in "provider/model-id" format, e.g.
+      "anthropic/claude-3-5-haiku-20241022", "openai/gpt-4o",
+      "deepseek/deepseek-chat".
+    required: false
+    default: 'anthropic/claude-3-5-haiku-20241022'
+
+  api_key:
+    description: 'API key for the selected AI provider (pass via secrets).'
+    required: true
+
+  api_base:
+    description: 'Override the provider API base URL (leave blank for default).'
+    required: false
+    default: ''
+
+  workspace_dir:
+    description: 'Agent workspace directory (memory, notes, skills).'
+    required: false
+    default: ''
+
+  session:
+    description: 'Session key to scope conversation history.'
+    required: false
+    default: 'actions:default'
+
+# ---------------------------------------------------------------------------
+# Outputs
+# ---------------------------------------------------------------------------
+outputs:
+  response:
+    description: 'The agent text response (ANSI codes stripped).'
+    value: ${{ steps.run-agent.outputs.response }}
+
+# ---------------------------------------------------------------------------
+# Implementation (composite action)
+# ---------------------------------------------------------------------------
+runs:
+  using: 'composite'
+  steps:
+    # ── 1. Go toolchain ────────────────────────────────────────────────────
+    - name: Setup Go
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: ${{ github.action_path }}/go.mod
+        cache: true
+
+    # ── 2. Build the picoclaw binary (module cache keeps this fast) ─────────
+    - name: Build picoclaw
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: go build -o "$RUNNER_TEMP/picoclaw" ./cmd/picoclaw
+
+    # ── 3. Write a minimal config.json ─────────────────────────────────────
+    - name: Write agent config
+      shell: bash
+      env:
+        INPUT_MODEL:     ${{ inputs.model }}
+        INPUT_API_KEY:   ${{ inputs.api_key }}
+        INPUT_API_BASE:  ${{ inputs.api_base }}
+        INPUT_WORKSPACE: ${{ inputs.workspace_dir }}
+      run: |
+        CONFIG_DIR="$RUNNER_TEMP/picoclaw-cfg"
+        mkdir -p "$CONFIG_DIR"
+
+        python3 - <<'PYEOF'
+import json, os
+
+model     = os.environ["INPUT_MODEL"]
+api_key   = os.environ["INPUT_API_KEY"]
+api_base  = os.environ.get("INPUT_API_BASE", "").strip()
+workspace = os.environ.get("INPUT_WORKSPACE", "").strip()
+cfg_dir   = os.environ["RUNNER_TEMP"] + "/picoclaw-cfg"
+
+# Default base URLs per provider prefix
+DEFAULT_BASES = {
+    "anthropic":  "https://api.anthropic.com/v1",
+    "openai":     "https://api.openai.com/v1",
+    "deepseek":   "https://api.deepseek.com/v1",
+    "groq":       "https://api.groq.com/openai/v1",
+    "gemini":     "https://generativelanguage.googleapis.com/v1beta",
+    "mistral":    "https://api.mistral.ai/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
+}
+
+if "/" in model:
+    provider, model_id = model.split("/", 1)
+else:
+    provider, model_id = model, model
+
+if not api_base:
+    api_base = DEFAULT_BASES.get(provider, "")
+
+model_name = model_id
+
+cfg = {
+    "agents": {
+        "defaults": {
+            "workspace":             workspace or (cfg_dir + "/workspace"),
+            "model_name":            model_name,
+            "max_tokens":            8192,
+            "max_tool_iterations":   20,
+        }
+    },
+    "model_list": [
+        {
+            "model_name": model_name,
+            "model":      model,
+            "api_key":    api_key,
+            "api_base":   api_base,
+        }
+    ],
+    "tools": {
+        "web":        {"enabled": True,  "duckduckgo": {"enabled": True, "max_results": 5}},
+        "exec":       {"enabled": True,  "enable_deny_patterns": True},
+        "read_file":  {"enabled": True},
+        "write_file": {"enabled": True},
+        "list_dir":   {"enabled": True},
+    },
+    "channels":  {},
+    "heartbeat": {"enabled": False},
+    "devices":   {"enabled": False},
+}
+
+os.makedirs(cfg_dir, exist_ok=True)
+config_path = cfg_dir + "/config.json"
+with open(config_path, "w") as f:
+    json.dump(cfg, f, indent=2)
+print("Config written:", config_path)
+PYEOF
+
+        echo "PICOCLAW_CONFIG=$CONFIG_DIR/config.json" >> "$GITHUB_ENV"
+        echo "PICOCLAW_HOME=$CONFIG_DIR"              >> "$GITHUB_ENV"
+
+    # ── 4. Run the agent in one-shot mode ───────────────────────────────────
+    - name: Run agent
+      id: run-agent
+      shell: bash
+      env:
+        PICOCLAW_MESSAGE: ${{ inputs.message }}
+        PICOCLAW_SESSION: ${{ inputs.session }}
+      run: |
+        STDERR_LOG="$RUNNER_TEMP/picoclaw-stderr.log"
+
+        RAW=$(
+          "$RUNNER_TEMP/picoclaw" agent \
+            --message  "$PICOCLAW_MESSAGE" \
+            --session  "$PICOCLAW_SESSION" \
+            2>"$STDERR_LOG"
+        ) || {
+          echo "::error::PicoClaw agent exited with an error"
+          cat "$STDERR_LOG" >&2
+          exit 1
+        }
+
+        # Strip ANSI escape codes then remove the leading "🦞 " logo line
+        CLEAN=$(
+          printf '%s' "$RAW" \
+            | sed 's/\x1B\[[0-9;]*[mGKHFJA-Z]//g' \
+            | sed 's/^\s*🦞\s*//'
+        )
+
+        {
+          echo 'response<<_PICOCLAW_EOF_'
+          printf '%s\n' "$CLEAN"
+          echo '_PICOCLAW_EOF_'
+        } >> "$GITHUB_OUTPUT"

@@ -1,0 +1,199 @@
+# Blog Writer — GitHub Actions matrix workflow
+#
+# Runs the PicoClaw AI agent in parallel across multiple topics
+# (GitHub Actions matrix strategy) and publishes each generated
+# Jekyll-formatted post to docs/_posts/.
+#
+# Required repository secret:
+#   AI_API_KEY   — API key for the chosen AI provider
+#
+# Optional repository variable (defaults shown):
+#   AI_MODEL     — e.g. anthropic/claude-3-5-haiku-20241022
+
+name: Blog Writer
+
+on:
+  # Run every Monday at 09:00 UTC
+  schedule:
+    - cron: '0 9 * * 1'
+
+  # Allow manual runs with custom topics / model
+  workflow_dispatch:
+    inputs:
+      topics:
+        description: >
+          JSON array of blog topics to write in parallel.
+          Example: ["AI ethics","Rust vs Go","Open source 2025"]
+        required: false
+        default: ''
+      model:
+        description: >
+          Model in "provider/model-id" format.
+          Leave blank to use the AI_MODEL variable (or the built-in default).
+        required: false
+        default: ''
+
+# Only one blog-writer run at a time; a new push cancels the in-progress one.
+concurrency:
+  group: blog-writer
+  cancel-in-progress: true
+
+jobs:
+  # ── 0. Resolve matrix ─────────────────────────────────────────────────────
+  # Builds the topic list from workflow_dispatch input or falls back to a
+  # default set used by the scheduled run.
+  set-matrix:
+    name: Set topic matrix
+    runs-on: ubuntu-latest
+    outputs:
+      topics: ${{ steps.resolve.outputs.topics }}
+      model:  ${{ steps.resolve.outputs.model }}
+    steps:
+      - name: Resolve topics and model
+        id: resolve
+        env:
+          INPUT_TOPICS: ${{ inputs.topics }}
+          INPUT_MODEL:  ${{ inputs.model }}
+          VAR_MODEL:    ${{ vars.AI_MODEL }}
+        run: |
+          # ---------- topics ----------
+          DEFAULT_TOPICS='["The future of AI agents","Open source tools every developer should know","Writing clean code: lessons from the trenches"]'
+          if [ -n "$INPUT_TOPICS" ]; then
+            echo "topics=$INPUT_TOPICS" >> "$GITHUB_OUTPUT"
+          else
+            echo "topics=$DEFAULT_TOPICS" >> "$GITHUB_OUTPUT"
+          fi
+
+          # ---------- model ----------
+          RESOLVED_MODEL="${INPUT_MODEL:-${VAR_MODEL:-anthropic/claude-3-5-haiku-20241022}}"
+          echo "model=$RESOLVED_MODEL" >> "$GITHUB_OUTPUT"
+
+  # ── 1. Generate posts (matrix) ────────────────────────────────────────────
+  # One job per topic, all running in parallel.
+  generate:
+    name: Write — "${{ matrix.topic }}"
+    needs: set-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false          # keep writing even if one topic fails
+      matrix:
+        topic: ${{ fromJson(needs.set-matrix.outputs.topics) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Slugify the topic so it can be used in file/artifact names
+      - name: Compute slug
+        id: slug
+        env:
+          TOPIC: ${{ matrix.topic }}
+        run: |
+          SLUG=$(
+            printf '%s' "$TOPIC" \
+              | tr '[:upper:]' '[:lower:]' \
+              | tr ' /' '--' \
+              | sed 's/[^a-z0-9-]//g' \
+              | sed 's/--*/-/g' \
+              | sed 's/^-//;s/-$//'
+          )
+          echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
+
+      # Run the PicoClaw action to write the post
+      - name: Write blog post
+        id: agent
+        uses: ./                 # <— PicoClaw composite action (this repo)
+        with:
+          message: |
+            You are writing a blog post for an AI agent persona's GitHub Pages blog.
+
+            Topic: ${{ matrix.topic }}
+
+            Return ONLY the complete, publication-ready Jekyll post. Use this exact
+            front-matter format, then write the Markdown body below it:
+
+            ---
+            layout: post
+            title: "Your Engaging Title Here"
+            date: YYYY-MM-DD HH:MM:SS +0000
+            categories: [category1, category2]
+            tags: [tag1, tag2, tag3]
+            excerpt: "One-sentence summary shown on the blog index."
+            ---
+
+            ## Introduction
+
+            ...body in Markdown...
+
+            Replace YYYY-MM-DD HH:MM:SS +0000 with today's UTC date/time.
+            Do NOT include any text before the opening "---" of the front matter.
+          model:   ${{ needs.set-matrix.outputs.model }}
+          api_key: ${{ secrets.AI_API_KEY }}
+          workspace_dir: ${{ github.workspace }}/workspace
+          session: blog-${{ steps.slug.outputs.slug }}
+
+      # Persist the post as a workflow artifact so the commit job can collect
+      # all posts in one push (avoids concurrent git-push conflicts).
+      - name: Save post artifact
+        env:
+          POST_CONTENT: ${{ steps.agent.outputs.response }}
+          SLUG: ${{ steps.slug.outputs.slug }}
+        run: |
+          DATE=$(date -u +%Y-%m-%d)
+          POSTS_DIR="$RUNNER_TEMP/posts"
+          mkdir -p "$POSTS_DIR"
+          FILENAME="${DATE}-${SLUG}.md"
+          printf '%s\n' "$POST_CONTENT" > "$POSTS_DIR/$FILENAME"
+          echo "Saved: $POSTS_DIR/$FILENAME"
+
+      - name: Upload post artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: post-${{ steps.slug.outputs.slug }}
+          path: ${{ runner.temp }}/posts/*.md
+          if-no-files-found: error
+
+  # ── 2. Commit all posts at once ───────────────────────────────────────────
+  # Runs after every generate job succeeds (or is allowed to fail).
+  commit:
+    name: Commit posts
+    needs: generate
+    if: always() && needs.generate.result != 'skipped'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Download all post artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: post-*
+          path: ${{ runner.temp }}/all-posts
+          merge-multiple: true
+
+      - name: Copy posts into docs/_posts
+        run: |
+          mkdir -p docs/_posts
+          find "$RUNNER_TEMP/all-posts" -name "*.md" | while read -r f; do
+            echo "Copying: $f"
+            cp "$f" docs/_posts/
+          done
+          echo "--- docs/_posts contents ---"
+          ls -1 docs/_posts/
+
+      - name: Commit and push
+        run: |
+          git config user.name  "picoclaw-blog-bot"
+          git config user.email "picoclaw-blog-bot@users.noreply.github.com"
+          git add docs/_posts/
+          if git diff --staged --quiet; then
+            echo "Nothing new to commit."
+          else
+            git commit -m "📝 Blog posts [$(date -u +%Y-%m-%d)] [skip ci]"
+            git push
+          fi
