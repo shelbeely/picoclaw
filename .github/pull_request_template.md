@@ -8,11 +8,36 @@
 - [ ] 📖 Documentation update
 - [ ] ⚡ Code refactoring (no functional changes, no api changes)
 
-## 🤖 AI Code Generation
+## 🤖 AI Contribution
+
+### Involvement Level
 - [ ] 🤖 Fully AI-generated (100% AI, 0% Human)
 - [ ] 🛠️ Mostly AI-generated (AI draft, Human verified/modified)
 - [ ] 👨‍💻 Mostly Human-written (Human lead, AI assisted or none)
+- [ ] 🚫 No AI involvement
 
+### AI Tool(s) / Model(s) Used
+<!-- List each AI tool or model used, e.g. GitHub Copilot, ChatGPT (GPT-4o), Claude 3.5 Sonnet, DeepSeek-V3 -->
+
+### How AI Was Used
+- [ ] 💡 Idea / design brainstorming
+- [ ] 🔨 Code generation (new files or functions)
+- [ ] ♻️ Code refactoring
+- [ ] 🐛 Debugging / root-cause analysis
+- [ ] 🧪 Test generation
+- [ ] 📖 Documentation writing
+- [ ] 🔍 Code review / suggestions
+- [ ] 🌐 Translation
+
+### Parts of the Codebase Affected by AI
+<!-- Briefly list the files, packages, or components where AI was involved, e.g. "pkg/llm/*, README.md" -->
+
+### Human Oversight
+- [ ] ✅ I reviewed all AI-generated code before submission
+- [ ] ✅ AI-generated code is covered by tests (new or existing)
+- [ ] ⚠️ AI-generated code is not yet fully tested (explain below)
+
+<!-- If AI-generated code is untested, explain why and any mitigations taken -->
 
 ## 🔗 Related Issue
 
