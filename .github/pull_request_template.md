@@ -1,12 +1,30 @@
 ## 📝 Description
 
-<!-- Please briefly describe the changes and purpose of this PR -->
+<!-- One or two sentences describing what this PR does and why -->
+
+## 🔗 Related Issue
+
+<!-- Fixes #123 / Closes #456 -->
+
+---
 
 ## 🗣️ Type of Change
-- [ ] 🐞 Bug fix (non-breaking change which fixes an issue)
-- [ ] ✨ New feature (non-breaking change which adds functionality)
+- [ ] 🐞 Bug fix
+- [ ] ✨ New feature
 - [ ] 📖 Documentation update
-- [ ] ⚡ Code refactoring (no functional changes, no api changes)
+- [ ] ⚡ Code refactoring
+- [ ] 🔒 Security fix
+- [ ] 💥 Breaking change
+
+## ⚠️ Impact & Risk
+- [ ] 💥 Contains breaking changes to public API or config
+- [ ] 🔒 Has security implications
+- [ ] ⚡ Has performance implications
+- [ ] 🗄️ Requires config / environment variable changes
+- [ ] 🔌 Affects external API or provider integrations
+- [ ] 🧩 No notable risk
+
+---
 
 ## 🤖 AI Contribution
 
@@ -17,7 +35,15 @@
 - [ ] 🚫 No AI involvement
 
 ### AI Tool(s) / Model(s) Used
-<!-- List each AI tool or model used, e.g. GitHub Copilot, ChatGPT (GPT-4o), Claude 3.5 Sonnet, DeepSeek-V3 -->
+- [ ] GitHub Copilot
+- [ ] ChatGPT / GPT-4o
+- [ ] Claude (Anthropic)
+- [ ] Gemini (Google)
+- [ ] DeepSeek
+- [ ] Kimi
+- [ ] Grok
+- [ ] Local / Ollama
+- [ ] Other
 
 ### How AI Was Used
 - [ ] 💡 Idea / design brainstorming
@@ -30,35 +56,67 @@
 - [ ] 🌐 Translation
 
 ### Parts of the Codebase Affected by AI
-<!-- Briefly list the files, packages, or components where AI was involved, e.g. "pkg/llm/*, README.md" -->
+- [ ] `pkg/llm` (LLM / provider logic)
+- [ ] `pkg/bot` / channel adapters
+- [ ] `cmd/` (CLI entry points)
+- [ ] `config/` (configuration)
+- [ ] `web/` (frontend / web UI)
+- [ ] `docs/` / README
+- [ ] Tests
+- [ ] Other
 
 ### Human Oversight
 - [ ] ✅ I reviewed all AI-generated code before submission
 - [ ] ✅ AI-generated code is covered by tests (new or existing)
-- [ ] ⚠️ AI-generated code is not yet fully tested (explain below)
+- [ ] ⚠️ AI-generated code has limited test coverage
 
-<!-- If AI-generated code is untested, explain why and any mitigations taken -->
-
-## 🔗 Related Issue
-
-<!-- Please link the related issue(s) (e.g., Fixes #123, Closes #456) -->
-
-## 📚 Technical Context (Skip for Docs)
-- **Reference URL:**
-- **Reasoning:**
+---
 
 ## 🧪 Test Environment
-- **Hardware:** <!-- e.g. Raspberry Pi 5, Orange Pi, PC-->
-- **OS:** <!-- e.g. Debian 12, Ubuntu 22.04 -->
-- **Model/Provider:** <!-- e.g. OpenAI GPT-4o, Kimi k2, DeepSeek-V3 -->
-- **Channels:** <!-- e.g. Discord, Telegram, Feishu, ... -->
 
+### Hardware
+- [ ] Raspberry Pi 4 / 5
+- [ ] Orange Pi
+- [ ] x86 PC / Server
+- [ ] ARM (other)
+- [ ] Cloud / VPS
+- [ ] Not applicable
+
+### Operating System
+- [ ] Linux – Debian / Ubuntu
+- [ ] Linux – other distro
+- [ ] macOS
+- [ ] Windows
+- [ ] Android / Termux
+- [ ] Not applicable
+
+### AI Provider Tested Against
+- [ ] OpenAI
+- [ ] Anthropic
+- [ ] Google
+- [ ] DeepSeek
+- [ ] SiliconFlow
+- [ ] OpenRouter
+- [ ] Local / Ollama
+- [ ] Not applicable
+
+### Channels Tested
+- [ ] Discord
+- [ ] Telegram
+- [ ] Feishu / Lark
+- [ ] Slack
+- [ ] WeChat
+- [ ] Line
+- [ ] Other
+- [ ] Not applicable
+
+---
 
 ## 📸 Evidence (Optional)
 <details>
-<summary>Click to view Logs/Screenshots</summary>
+<summary>Click to view Logs / Screenshots</summary>
 
-<!-- Please paste relevant screenshots or logs here -->
+<!-- Paste relevant screenshots or logs here -->
 
 </details>
 
