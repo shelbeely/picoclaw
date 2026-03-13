@@ -110,6 +110,7 @@ jobs:
     name: Write — "${{ matrix.topic }}"
     needs: set-matrix
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     strategy:
@@ -130,11 +131,14 @@ jobs:
         env:
           TOPIC: ${{ matrix.topic }}
         run: |
+          # Normalise topic to a URL-safe slug; truncate to 60 chars to keep
+          # Jekyll filenames at a sane length (consistent with swarm.yml).
           SLUG=$(printf '%s' "$TOPIC" \
             | tr '[:upper:]' '[:lower:]' \
             | tr ' /' '--' \
             | sed 's/[^a-z0-9-]//g' \
-            | sed 's/--*/-/g;s/^-//;s/-$//')
+            | sed 's/--*/-/g;s/^-//;s/-$//' \
+            | cut -c1-60)
           echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
 
       - name: Write blog post (picoclaw)
@@ -225,3 +229,17 @@ jobs:
             git commit -m "📝 Blog posts [$(date -u +%Y-%m-%d)] [skip ci]"
             git push
           fi
+
+      - name: Job summary
+        run: |
+          POST_COUNT=$(find "$RUNNER_TEMP/all-posts" -name "*.md" | wc -l)
+          {
+            echo "## 📝 Blog Writer complete"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| **Posts written** | ${POST_COUNT} |"
+            echo "| **Model** | ${{ needs.set-matrix.outputs.model }} |"
+            echo "| **Max parallel** | ${{ needs.set-matrix.outputs.max_parallel }} |"
+            echo "| **Date** | $(date -u +%Y-%m-%d) |"
+          } >> "$GITHUB_STEP_SUMMARY"
