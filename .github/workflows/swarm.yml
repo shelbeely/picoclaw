@@ -277,6 +277,7 @@ jobs:
     name: Write draft
     needs: [orchestrate, research]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
 
@@ -374,6 +375,7 @@ jobs:
     name: Edit and publish
     needs: [orchestrate, write]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
 
