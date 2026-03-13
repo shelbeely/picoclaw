@@ -1,8 +1,8 @@
 # PicoClaw GitHub Actions — Reference Guide
 
 This document covers every new GitHub Actions artefact in this fork:
-the reusable **`action.yml`** composite action, the three **workflows**
-(Blog Writer, Swarm, Pages), and the **docs/** Jekyll blog that they publish to.
+the reusable **`action.yml`** composite action, the four **workflows**
+(Blog Writer, Swarm, Research Swarm, Pages), and the **docs/** Jekyll blog that they publish to.
 
 ---
 
@@ -15,10 +15,11 @@ the reusable **`action.yml`** composite action, the three **workflows**
 5. [`action.yml` — PicoClaw AI Agent action](#actionyml--picoclaw-ai-agent-action)
 6. [Workflow: Blog Writer](#workflow-blog-writer)
 7. [Workflow: PicoClaw Swarm](#workflow-picoclaw-swarm)
-8. [Workflow: Deploy to GitHub Pages](#workflow-deploy-to-github-pages)
-9. [Jekyll blog scaffold](#jekyll-blog-scaffold)
-10. [Workspace persona](#workspace-persona)
-11. [Customisation](#customisation)
+8. [Workflow: Research Swarm](#workflow-research-swarm)
+9. [Workflow: Deploy to GitHub Pages](#workflow-deploy-to-github-pages)
+10. [Jekyll blog scaffold](#jekyll-blog-scaffold)
+11. [Workspace persona](#workspace-persona)
+12. [Customisation](#customisation)
 
 ---
 
@@ -42,9 +43,16 @@ runs on GitHub's free compute tier.
 │  ─────────────────────────────────────────────────────────────  │
 │  orchestrate → research[N] (parallel) → write → edit → commit  │
 └─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  Research Swarm workflow (workflow_dispatch)                    │
+│  ─────────────────────────────────────────────────────────────  │
+│  setup → research[10 shards] (parallel) → reduce → report      │
+│  → docs/research/YYYY-MM-DD-<slug>.md + artifact               │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-The reusable `action.yml` is the building block both workflows share.
+The reusable `action.yml` is the building block all workflows share.
 Any workflow — in this repo or in another — can invoke a PicoClaw agent
 with a single `uses:` step.
 
@@ -87,7 +95,8 @@ Pages site updates automatically.
 |---|---|---|---|
 | `OPENROUTER_API_KEY` | Secret | One of these two | OpenRouter API key |
 | `AI_API_KEY` | Secret | One of these two | Any other provider key |
-| `AI_MODEL` | Variable | No | Default model (see below). Falls back to `openrouter/meta-llama/llama-3.1-8b-instruct:free` |
+| `OPENROUTER_MODEL` | Variable | No | Default model for the Research Swarm (takes precedence over `AI_MODEL`). |
+| `AI_MODEL` | Variable | No | Default model for Blog Writer and Swarm. Falls back to `openrouter/meta-llama/llama-3.1-8b-instruct:free` |
 
 Set variables at **Settings → Secrets and variables → Actions → Variables**.
 
@@ -354,6 +363,129 @@ With `free_tier: true`:
 - `rate_limit_delay: 3` — each agent sleeps 3 s before its first call.
 
 This guarantees at most ~1 API call every 3 s, well under the 20 req/min cap.
+
+---
+
+## Workflow: Research Swarm
+
+**File:** `.github/workflows/research-swarm.yml`  
+**Trigger:** `workflow_dispatch` only
+
+Launches 10 parallel PicoClaw agents, each investigating a different
+angle of a single research goal, then merges and summarises all findings
+into one final Markdown report.
+
+### Inputs (workflow_dispatch)
+
+| Input | Default | Description |
+|---|---|---|
+| `goal` | *required* | Root research goal or question for the entire swarm |
+| `model` | `OPENROUTER_MODEL` or `AI_MODEL` variable | Model in `provider/model-id` format |
+| `free_tier` | `false` | Enable rate-limiting for `:free` models |
+| `max_parallel` | auto (2 free / 10 paid) | Override max parallel research agents (1–10) |
+
+### Shards (10 fixed)
+
+Each shard is a unique research angle assigned to one agent.  Agents
+are instructed to stay within their shard and avoid overlap.
+
+| Shard | Scope |
+|---|---|
+| `official-docs` | Official documentation, specifications, reference material |
+| `github-repos` | Open-source repositories, code examples, GitHub projects |
+| `blog-posts` | Expert blog posts, articles, commentary |
+| `tutorials` | Step-by-step guides, how-tos, walkthroughs |
+| `discussions` | Forum threads, Reddit, Hacker News, Stack Overflow |
+| `benchmarks` | Performance data, comparisons, metrics, evaluations |
+| `critical-opinions` | Critiques, limitations, known issues, sceptical viewpoints |
+| `implementation-examples` | Real-world implementations, production case studies |
+| `related-tools` | Adjacent tools, libraries, alternatives, integrations |
+| `recent-updates` | News, changelog entries, developments from the past 6 months |
+
+### Pipeline stages
+
+```
+setup
+  Resolves model, rate-limit parameters, and the 10-element shard array.
+  Outputs: model, max_parallel, delay, jitter_max, shards
+
+research (matrix — 10 shards in parallel)
+  Each agent:
+  1. Sleeps a random jitter (1–5 s free / 1 s paid) to spread API calls.
+  2. Searches the web for sources within its shard only.
+  3. Returns 3–6 findings in structured Markdown.
+  4. Saves output as two artifacts: <shard>.md and <shard>.json.
+
+reduce
+  1. Downloads all research-shard-* artifacts.
+  2. Merges all Markdown files and a JSON manifest.
+  3. Calls a picoclaw reducer agent to:
+     - Remove duplicate findings.
+     - Rank findings by usefulness.
+     - Generate the final Markdown report.
+  4. Saves the report to docs/research/YYYY-MM-DD-<slug>.md.
+  5. Commits and pushes the report, and uploads it as the research-report artifact.
+```
+
+### Jobs
+
+| Job | Description |
+|---|---|
+| `setup` | Resolves model, rate limits, and the 10-element shard matrix |
+| `research` | Matrix job — one picoclaw per shard, up to 10 in parallel |
+| `reduce` | Downloads all shard artifacts, merges, deduplicates, generates report |
+
+### Rate limiting
+
+```
+free_tier: true  →  max-parallel: 2  +  rate_limit_delay: 3  +  jitter: 1–5 s
+free_tier: false →  max-parallel: 10 +  rate_limit_delay: 0  +  jitter: 1 s
+```
+
+Auto-detection: if the model ID contains `:free`, `free_tier` is treated as
+`true` regardless of the input value.
+
+With free tier and 10 shards serialised to 2 at a time, total runtime is
+approximately 5 × (agent time + 3 s delay + jitter).  With paid models all 10
+run in parallel.
+
+### Outputs
+
+- **`research-report` artifact** — the final Markdown report, downloadable from
+  the workflow run's Artifacts section.
+- **`docs/research/YYYY-MM-DD-<slug>.md`** — the same report committed to the
+  repository.
+- **`research-shard-<shard>` artifacts** — raw per-shard Markdown and JSON
+  (useful for debugging or re-running the reducer).
+
+### Quick start
+
+1. Add `OPENROUTER_API_KEY` to your repo secrets (see [Secrets and variables](#secrets-and-variables)).
+2. Go to **Actions → Research Swarm → Run workflow**.
+3. Enter your research goal, e.g. `"Best practices for building AI agent systems in 2025"`.
+4. Accept the defaults (free Llama model, auto rate-limiting).
+5. When the workflow completes, download the `research-report` artifact or read
+   `docs/research/` in the repository.
+
+### Example dispatch
+
+```yaml
+# Trigger from another workflow or the Actions UI
+- uses: actions/github-script@v7
+  with:
+    script: |
+      await github.rest.actions.createWorkflowDispatch({
+        owner: context.repo.owner,
+        repo:  context.repo.repo,
+        workflow_id: 'research-swarm.yml',
+        ref:   'main',
+        inputs: {
+          goal:       'Comprehensive overview of vector databases in 2025',
+          model:      'openrouter/meta-llama/llama-3.1-8b-instruct:free',
+          free_tier:  'true'
+        }
+      })
+```
 
 ---
 
