@@ -1,0 +1,457 @@
+# Research Swarm — parallel PicoClaw research agents + reducer
+#
+# Launches 10 parallel agent shards, each investigating a different angle
+# of a single research goal.  A final reducer job merges, deduplicates,
+# and summarises all findings into one Markdown report.
+#
+# Pipeline:
+#
+#   ┌──────────────────────────────────────────────────────────────────┐
+#   │  Job 1 · setup                                                   │
+#   │  Resolves model, rate limits, and the 10-element shard matrix    │
+#   └─────────────────────────────┬────────────────────────────────────┘
+#                                 │
+#   ┌──────┬──────┬──────┬────────┴──────┬──────┬──────┬──────┐
+#   ▼      ▼      ▼      ▼               ▼      ▼      ▼      ▼   ← matrix (10 shards)
+# [shard1][shard2]...                                         [shard10]
+#   └──────┴──────┴──────┴───────────────┴──────┴──────┴──────┘
+#                                 │
+#   ┌─────────────────────────────┴────────────────────────────────────┐
+#   │  Job 3 · reduce                                                  │
+#   │  Downloads all shard artifacts, merges + deduplicates findings,  │
+#   │  ranks them, and generates a final Markdown research report      │
+#   └──────────────────────────────────────────────────────────────────┘
+#
+# ┌─────────────────────────────────────────────────────────────────────┐
+# │ Required secret                                                     │
+# │   OPENROUTER_API_KEY  — your OpenRouter key (recommended)          │
+# │   AI_API_KEY          — fallback for other providers               │
+# │                                                                     │
+# │ Optional repository variables                                       │
+# │   OPENROUTER_MODEL   — full model ID (provider/model-id[:free])    │
+# │   AI_MODEL           — fallback if OPENROUTER_MODEL is not set     │
+# └─────────────────────────────────────────────────────────────────────┘
+#
+# Shards (10 fixed):
+#   official-docs | github-repos | blog-posts | tutorials | discussions
+#   benchmarks | critical-opinions | implementation-examples |
+#   related-tools | recent-updates
+#
+# Rate-limit handling (OpenRouter free tier):
+#   Free models (:free suffix) → max-parallel: 2, 3 s delay, up to 5 s jitter
+#   Paid models               → max-parallel: 10, 0 s delay, up to 1 s jitter
+#
+# Set free_tier: true (or rely on auto-detection) to engage throttling.
+# Set max_parallel to override the parallel concurrency cap.
+
+name: Research Swarm
+
+on:
+  workflow_dispatch:
+    inputs:
+      goal:
+        description: 'Root research goal or question for the entire swarm.'
+        required: true
+        default: 'What are the best practices for building AI agent systems in 2025?'
+      model:
+        description: >
+          Model in "provider/model-id" format.
+          Leave blank to use the OPENROUTER_MODEL or AI_MODEL variable.
+          Free-tier example: openrouter/meta-llama/llama-3.1-8b-instruct:free
+        required: false
+        default: ''
+      free_tier:
+        description: >
+          Set true when using an OpenRouter :free model.
+          Limits parallel agents and adds delays to respect the 20 req/min cap.
+          Auto-detected when model ID ends in ":free".
+        required: false
+        default: 'false'
+      max_parallel:
+        description: >
+          Maximum parallel research agents (1–10).
+          Leave blank for auto (2 for free tier, 10 for paid).
+        required: false
+        default: ''
+
+concurrency:
+  group: research-swarm
+  cancel-in-progress: true
+
+# ── Job 1 · Setup ────────────────────────────────────────────────────────────
+jobs:
+  setup:
+    name: Setup — resolve model, rate limits, shard matrix
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      model:        ${{ steps.resolve.outputs.model }}
+      max_parallel: ${{ steps.resolve.outputs.max_parallel }}
+      delay:        ${{ steps.resolve.outputs.delay }}
+      jitter_max:   ${{ steps.resolve.outputs.jitter_max }}
+      shards:       ${{ steps.resolve.outputs.shards }}
+
+    steps:
+      - name: Resolve model, rate limits, and shard matrix
+        id: resolve
+        env:
+          INPUT_MODEL:          ${{ inputs.model }}
+          INPUT_FREE_TIER:      ${{ inputs.free_tier }}
+          INPUT_MAX_PARALLEL:   ${{ inputs.max_parallel }}
+          VAR_OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL }}
+          VAR_MODEL:            ${{ vars.AI_MODEL }}
+        run: |
+          # ── model — precedence: input > OPENROUTER_MODEL > AI_MODEL > default ──
+          RESOLVED="${INPUT_MODEL:-${VAR_OPENROUTER_MODEL:-${VAR_MODEL:-openrouter/meta-llama/llama-3.1-8b-instruct:free}}}"
+          echo "model=$RESOLVED" >> "$GITHUB_OUTPUT"
+
+          # ── free-tier auto-detection ─────────────────────────────────────────
+          IS_FREE="$INPUT_FREE_TIER"
+          if [ "$IS_FREE" != "true" ] && [[ "$RESOLVED" == *":free"* ]]; then
+            IS_FREE="true"
+            echo "::notice::Free-tier model detected — enabling conservative rate limiting."
+          fi
+
+          # ── rate-limit parameters ────────────────────────────────────────────
+          if [ "$IS_FREE" = "true" ]; then
+            DEFAULT_MAX_PARALLEL=2
+            DELAY=3
+            JITTER_MAX=5
+          else
+            DEFAULT_MAX_PARALLEL=10
+            DELAY=0
+            JITTER_MAX=1
+          fi
+          echo "delay=$DELAY"           >> "$GITHUB_OUTPUT"
+          echo "jitter_max=$JITTER_MAX" >> "$GITHUB_OUTPUT"
+
+          # ── max_parallel — honour explicit override ──────────────────────────
+          if [ -n "$INPUT_MAX_PARALLEL" ] && [ "$INPUT_MAX_PARALLEL" -ge 1 ] 2>/dev/null; then
+            echo "max_parallel=$INPUT_MAX_PARALLEL" >> "$GITHUB_OUTPUT"
+          else
+            echo "max_parallel=$DEFAULT_MAX_PARALLEL" >> "$GITHUB_OUTPUT"
+          fi
+
+          # ── shards — fixed 10-element array ─────────────────────────────────
+          SHARDS=$(jq -cn '[
+            "official-docs",
+            "github-repos",
+            "blog-posts",
+            "tutorials",
+            "discussions",
+            "benchmarks",
+            "critical-opinions",
+            "implementation-examples",
+            "related-tools",
+            "recent-updates"
+          ]')
+          echo "shards=$SHARDS" >> "$GITHUB_OUTPUT"
+
+  # ── Job 2 · Research matrix (one picoclaw per shard) ─────────────────────
+  research:
+    name: Research — ${{ matrix.shard }}
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      # free tier  → max-parallel: 2  (limits burst, preserves daily budget)
+      # paid tier  → max-parallel: 10 (all shards in parallel)
+      max-parallel: ${{ fromJson(needs.setup.outputs.max_parallel) }}
+      matrix:
+        shard: ${{ fromJson(needs.setup.outputs.shards) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Randomised jitter to spread API calls and reduce burst pressure.
+      # free tier: 1–5 s   paid tier: 1 s
+      - name: Jitter sleep
+        env:
+          JITTER_MAX: ${{ needs.setup.outputs.jitter_max }}
+        run: |
+          JITTER=$(( RANDOM % $JITTER_MAX + 1 ))
+          echo "Jitter sleep: ${JITTER}s"
+          sleep "$JITTER"
+
+      - name: Research shard (picoclaw)
+        id: agent
+        uses: ./
+        with:
+          message: |
+            You are a focused research agent in a multi-agent swarm.
+
+            ROOT GOAL: ${{ inputs.goal }}
+            YOUR SHARD: ${{ matrix.shard }}
+
+            SHARD DEFINITIONS:
+            - official-docs: Official documentation, specifications, and reference material
+            - github-repos: Open-source repositories, code examples, and GitHub projects
+            - blog-posts: Expert blog posts, articles, and commentary
+            - tutorials: Step-by-step guides, how-tos, and walkthroughs
+            - discussions: Forum threads, Reddit, Hacker News, Stack Overflow discussions
+            - benchmarks: Performance data, comparisons, metrics, and evaluations
+            - critical-opinions: Critiques, limitations, known issues, and sceptical viewpoints
+            - implementation-examples: Real-world implementations and production case studies
+            - related-tools: Adjacent tools, libraries, alternatives, and integrations
+            - recent-updates: News, changelog entries, and developments from the past 6 months
+
+            INSTRUCTIONS:
+            1. Search the web for sources that fall within YOUR SHARD only.
+            2. Do NOT research topics that belong to another shard.
+            3. Gather 3–6 distinct findings, each with a source link.
+            4. Be concise — one short paragraph per finding.
+
+            OUTPUT FORMAT (strict — output only this Markdown, nothing else):
+
+            ## ${{ matrix.shard }}
+
+            <!-- shard: ${{ matrix.shard }} -->
+
+            ### Finding 1: <short title>
+            <one-paragraph summary>
+            Source: <URL>
+
+            ### Finding 2: <short title>
+            <one-paragraph summary>
+            Source: <URL>
+
+            (continue for each finding)
+          model:            ${{ needs.setup.outputs.model }}
+          api_key:          ${{ secrets.OPENROUTER_API_KEY || secrets.AI_API_KEY }}
+          session:          research-swarm-${{ matrix.shard }}-${{ github.run_id }}
+          rate_limit_delay: ${{ needs.setup.outputs.delay }}
+
+      - name: Save shard output
+        env:
+          SHARD_OUTPUT: ${{ steps.agent.outputs.response }}
+          SHARD:        ${{ matrix.shard }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/shards"
+
+          # Markdown file for human-readable artifact and reducer input
+          printf '%s\n' "$SHARD_OUTPUT" > "$RUNNER_TEMP/shards/${SHARD}.md"
+
+          # JSON envelope for structured downstream processing
+          jq -n \
+            --arg shard   "$SHARD" \
+            --arg goal    "${{ inputs.goal }}" \
+            --arg run_id  "${{ github.run_id }}" \
+            --arg content "$SHARD_OUTPUT" \
+            '{shard: $shard, goal: $goal, run_id: $run_id, content: $content}' \
+          > "$RUNNER_TEMP/shards/${SHARD}.json"
+
+      - name: Upload shard artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: research-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/shards/
+          if-no-files-found: error
+
+  # ── Job 3 · Reduce — merge, deduplicate, rank, generate report ────────────
+  reduce:
+    name: Reduce — merge and generate final report
+    needs: [setup, research]
+    # Run even if some shards failed; skip only if research was never triggered
+    if: always() && needs.research.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Download all shard artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: research-shard-*
+          path: ${{ runner.temp }}/shards
+          merge-multiple: true
+
+      # Merge all shard Markdown files into one context document.
+      # The merged content is stored as a step output so it can be safely
+      # passed to the uses: ./ action's with.message field (GitHub Actions
+      # does not support shell substitution inside with: blocks).
+      - name: Merge shard outputs
+        id: merge
+        run: |
+          MERGED="$RUNNER_TEMP/merged.md"
+
+          {
+            echo "# Research Shard Outputs"
+            echo ""
+            echo "Goal: ${{ inputs.goal }}"
+            echo ""
+            echo "---"
+          } > "$MERGED"
+
+          # Build a JSON manifest of all shards for metadata
+          JSON_FILES=()
+          while IFS= read -r -d '' f; do
+            JSON_FILES+=("$f")
+          done < <(find "$RUNNER_TEMP/shards" -name "*.json" -print0 | sort -z)
+
+          if [ ${#JSON_FILES[@]} -gt 0 ]; then
+            jq -s '.' "${JSON_FILES[@]}" > "$RUNNER_TEMP/manifest.json"
+          else
+            echo "[]" > "$RUNNER_TEMP/manifest.json"
+          fi
+
+          SHARD_COUNT=$(jq 'length' "$RUNNER_TEMP/manifest.json")
+          echo "::notice::Merging ${SHARD_COUNT} shard(s)"
+
+          # Append each shard's Markdown content
+          while IFS= read -r -d '' f; do
+            {
+              echo ""
+              cat "$f"
+              echo ""
+              echo "---"
+            } >> "$MERGED"
+          done < <(find "$RUNNER_TEMP/shards" -name "*.md" -print0 | sort -z)
+
+          wc -l "$MERGED"
+
+          # Capture as multiline step output for use in with.message below
+          {
+            echo "content<<_MERGE_EOF_"
+            cat "$MERGED"
+            echo "_MERGE_EOF_"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "shard_count=$SHARD_COUNT" >> "$GITHUB_OUTPUT"
+
+      - name: Generate final report (picoclaw)
+        id: agent
+        uses: ./
+        with:
+          message: |
+            You are the reducer agent in a multi-agent research swarm.
+
+            RESEARCH GOAL: ${{ inputs.goal }}
+
+            SHARD OUTPUTS (compiled from parallel research agents):
+            ${{ steps.merge.outputs.content }}
+
+            YOUR TASK:
+            1. Read all shard outputs carefully.
+            2. Identify and remove duplicate findings (same fact cited by multiple shards).
+            3. Rank findings by usefulness and actionability — most important first.
+            4. Synthesise everything into a single, well-structured Markdown report.
+
+            OUTPUT FORMAT (output only this Markdown, nothing else):
+
+            # Research Report: ${{ inputs.goal }}
+
+            **Generated:** <UTC date and time>
+            **Shards:** ${{ steps.merge.outputs.shard_count }} researched
+
+            ## Executive Summary
+
+            <3–5 sentences covering the most important findings across all shards>
+
+            ## Top Findings
+
+            ### 1. <title>
+            <summary + source>
+
+            ### 2. <title>
+            <summary + source>
+
+            (continue ranking all unique findings)
+
+            ## By Category
+
+            ### Official Documentation & Specifications
+            <findings from official-docs shard>
+
+            ### Open-Source Repositories & Code
+            <findings from github-repos and implementation-examples shards>
+
+            ### Community & Discussions
+            <findings from blog-posts, tutorials, and discussions shards>
+
+            ### Tools & Integrations
+            <findings from related-tools shard>
+
+            ### Performance & Benchmarks
+            <findings from benchmarks shard>
+
+            ### Critical Perspectives
+            <findings from critical-opinions shard>
+
+            ### Recent Developments
+            <findings from recent-updates shard>
+
+            ## All Sources
+
+            - <URL> — <one-line description>
+            (list every unique source URL found across all shards)
+          model:            ${{ needs.setup.outputs.model }}
+          api_key:          ${{ secrets.OPENROUTER_API_KEY || secrets.AI_API_KEY }}
+          session:          research-swarm-reduce-${{ github.run_id }}
+          rate_limit_delay: ${{ needs.setup.outputs.delay }}
+
+      - name: Save final report
+        id: save
+        env:
+          REPORT: ${{ steps.agent.outputs.response }}
+        run: |
+          DATE=$(date -u +%Y-%m-%d)
+          SLUG=$(printf '%s' "${{ inputs.goal }}" \
+            | tr '[:upper:]' '[:lower:]' \
+            | tr ' /' '--' \
+            | sed 's/[^a-z0-9-]//g' \
+            | sed 's/--*/-/g;s/^-//;s/-$//' \
+            | cut -c1-60)
+          FILENAME="${DATE}-${SLUG}.md"
+          mkdir -p docs/research
+          printf '%s\n' "$REPORT" > "docs/research/$FILENAME"
+          echo "filename=$FILENAME" >> "$GITHUB_OUTPUT"
+
+      - name: Upload final report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: research-report
+          path: docs/research/${{ steps.save.outputs.filename }}
+          if-no-files-found: error
+
+      - name: Commit final report
+        run: |
+          git config user.name  "picoclaw-research-bot"
+          git config user.email "picoclaw-research-bot@users.noreply.github.com"
+          git add docs/research/
+          if git diff --staged --quiet; then
+            echo "Nothing to commit."
+          else
+            git commit -m "🔬 Research report: ${{ inputs.goal }} [skip ci]"
+            git push
+          fi
+
+      - name: Job summary
+        env:
+          SHARD_COUNT: ${{ steps.merge.outputs.shard_count }}
+        run: |
+          {
+            echo "## 🔬 Research Swarm complete"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| **Goal** | ${{ inputs.goal }} |"
+            echo "| **Model** | ${{ needs.setup.outputs.model }} |"
+            echo "| **Shards researched** | ${SHARD_COUNT} |"
+            echo "| **Max parallel** | ${{ needs.setup.outputs.max_parallel }} |"
+            echo "| **Rate-limit delay** | ${{ needs.setup.outputs.delay }}s |"
+            echo ""
+            echo "**Report:** \`docs/research/${{ steps.save.outputs.filename }}\`"
+            echo ""
+            echo "Download the \`research-report\` artifact above to read the full report."
+          } >> "$GITHUB_STEP_SUMMARY"

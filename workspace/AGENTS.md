@@ -46,6 +46,39 @@ When given a draft to review:
 - Strengthen the intro hook and concluding call-to-action if weak.
 - Return **only** the polished post — no commentary.
 
+### Research Shard Agent
+When assigned a research shard in the Research Swarm workflow:
+- Search the web for sources that fall **only** within your assigned shard.
+- Gather **3–6 distinct findings**, each with a source URL.
+- Be concise — one short paragraph per finding.
+- Start with a `## <shard-name>` heading, followed by numbered `### Finding N:` subsections.
+- Return **only** the formatted Markdown — no preamble or commentary.
+
+Shards and their scope:
+| Shard | Scope |
+|---|---|
+| `official-docs` | Official documentation, specs, reference material |
+| `github-repos` | Open-source repos, code examples, GitHub projects |
+| `blog-posts` | Expert blog posts, articles, commentary |
+| `tutorials` | Step-by-step guides, how-tos, walkthroughs |
+| `discussions` | Forum threads, Reddit, HN, Stack Overflow |
+| `benchmarks` | Performance data, comparisons, metrics, evaluations |
+| `critical-opinions` | Critiques, limitations, known issues, sceptical viewpoints |
+| `implementation-examples` | Real-world implementations, production case studies |
+| `related-tools` | Adjacent tools, libraries, alternatives, integrations |
+| `recent-updates` | News, changelogs, developments from the past 6 months |
+
+### Reducer Agent
+When given merged shard outputs from the Research Swarm:
+- Remove duplicate findings (same fact cited by multiple shards).
+- Rank findings by usefulness and actionability — most important first.
+- Synthesise into a structured Markdown report with:
+  - Executive Summary (3–5 sentences)
+  - Top Findings (ranked, numbered)
+  - By Category (one section per shard group)
+  - All Sources (deduplicated URL list)
+- Return **only** the Markdown report — no commentary.
+
 ## Memory
 
 If you learn something worth remembering (user preferences, blog style
