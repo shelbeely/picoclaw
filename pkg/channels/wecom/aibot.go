@@ -17,7 +17,6 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/identity"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
@@ -534,12 +533,7 @@ func (c *WeComAIBotChannel) handleTextMessage(
 	// Publish to agent asynchronously; agent will call Send() with reply.
 	// Use task.ctx (not c.ctx) so the agent goroutine is canceled when the task is removed.
 	go func() {
-		sender := bus.SenderInfo{
-			Platform:    "wecom_aibot",
-			PlatformID:  userID,
-			CanonicalID: identity.BuildCanonicalID("wecom_aibot", userID),
-			DisplayName: userID,
-		}
+		sender := channels.NewSenderInfo("wecom_aibot", userID, "", userID)
 		peerKind := "direct"
 		if msg.ChatType == "group" {
 			peerKind = "group"

@@ -19,7 +19,6 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/identity"
 	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
@@ -427,11 +426,7 @@ func (c *QQChannel) handleC2CMessage() event.C2CMessageEventHandler {
 			"account_id": senderID,
 		}
 
-		sender := bus.SenderInfo{
-			Platform:    "qq",
-			PlatformID:  data.Author.ID,
-			CanonicalID: identity.BuildCanonicalID("qq", data.Author.ID),
-		}
+		sender := channels.NewSenderInfo("qq", data.Author.ID, "", "")
 
 		if !c.IsAllowedSender(sender) {
 			return nil
@@ -501,11 +496,7 @@ func (c *QQChannel) handleGroupATMessage() event.GroupATMessageEventHandler {
 			"group_id":   data.GroupID,
 		}
 
-		sender := bus.SenderInfo{
-			Platform:    "qq",
-			PlatformID:  data.Author.ID,
-			CanonicalID: identity.BuildCanonicalID("qq", data.Author.ID),
-		}
+		sender := channels.NewSenderInfo("qq", data.Author.ID, "", "")
 
 		if !c.IsAllowedSender(sender) {
 			return nil

@@ -19,7 +19,6 @@ import (
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/commands"
 	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/identity"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/utils"
@@ -418,13 +417,7 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 	}
 
 	platformID := fmt.Sprintf("%d", user.ID)
-	sender := bus.SenderInfo{
-		Platform:    "telegram",
-		PlatformID:  platformID,
-		CanonicalID: identity.BuildCanonicalID("telegram", platformID),
-		Username:    user.Username,
-		DisplayName: user.FirstName,
-	}
+	sender := channels.NewSenderInfo("telegram", platformID, user.Username, user.FirstName)
 
 	// check allowlist to avoid downloading attachments for rejected users
 	if !c.IsAllowedSender(sender) {
@@ -444,20 +437,6 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 	messageIDStr := fmt.Sprintf("%d", message.MessageID)
 	scope := channels.BuildMediaScope("telegram", chatIDStr, messageIDStr)
 
-	// Helper to register a local file with the media store
-	storeMedia := func(localPath, filename string) string {
-		if store := c.GetMediaStore(); store != nil {
-			ref, err := store.Store(localPath, media.MediaMeta{
-				Filename: filename,
-				Source:   "telegram",
-			}, scope)
-			if err == nil {
-				return ref
-			}
-		}
-		return localPath // fallback: use raw path
-	}
-
 	if message.Text != "" {
 		content += message.Text
 	}
@@ -473,7 +452,13 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 		photo := message.Photo[len(message.Photo)-1]
 		photoPath := c.downloadPhoto(ctx, photo.FileID)
 		if photoPath != "" {
-			mediaPaths = append(mediaPaths, storeMedia(photoPath, "photo.jpg"))
+			mediaPaths = append(mediaPaths, channels.StoreInboundMedia(
+				c.GetMediaStore(),
+				"telegram",
+				photoPath,
+				media.MediaMeta{Filename: "photo.jpg"},
+				scope,
+			))
 			if content != "" {
 				content += "\n"
 			}
@@ -484,7 +469,13 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 	if message.Voice != nil {
 		voicePath := c.downloadFile(ctx, message.Voice.FileID, ".ogg")
 		if voicePath != "" {
-			mediaPaths = append(mediaPaths, storeMedia(voicePath, "voice.ogg"))
+			mediaPaths = append(mediaPaths, channels.StoreInboundMedia(
+				c.GetMediaStore(),
+				"telegram",
+				voicePath,
+				media.MediaMeta{Filename: "voice.ogg"},
+				scope,
+			))
 
 			if content != "" {
 				content += "\n"
@@ -496,7 +487,13 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 	if message.Audio != nil {
 		audioPath := c.downloadFile(ctx, message.Audio.FileID, ".mp3")
 		if audioPath != "" {
-			mediaPaths = append(mediaPaths, storeMedia(audioPath, "audio.mp3"))
+			mediaPaths = append(mediaPaths, channels.StoreInboundMedia(
+				c.GetMediaStore(),
+				"telegram",
+				audioPath,
+				media.MediaMeta{Filename: "audio.mp3"},
+				scope,
+			))
 			if content != "" {
 				content += "\n"
 			}
@@ -507,7 +504,13 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 	if message.Document != nil {
 		docPath := c.downloadFile(ctx, message.Document.FileID, "")
 		if docPath != "" {
-			mediaPaths = append(mediaPaths, storeMedia(docPath, "document"))
+			mediaPaths = append(mediaPaths, channels.StoreInboundMedia(
+				c.GetMediaStore(),
+				"telegram",
+				docPath,
+				media.MediaMeta{Filename: "document"},
+				scope,
+			))
 			if content != "" {
 				content += "\n"
 			}
