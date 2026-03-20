@@ -24,7 +24,6 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/identity"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
 )
@@ -573,13 +572,7 @@ func (c *MatrixChannel) handleMessageEvent(ctx context.Context, evt *event.Event
 	}
 
 	senderID := evt.Sender.String()
-	sender := bus.SenderInfo{
-		Platform:    "matrix",
-		PlatformID:  senderID,
-		CanonicalID: identity.BuildCanonicalID("matrix", senderID),
-		Username:    senderID,
-		DisplayName: senderID,
-	}
+	sender := channels.NewSenderInfo("matrix", senderID, senderID, senderID)
 
 	if !c.IsAllowedSender(sender) {
 		logger.DebugCF("matrix", "Message rejected by allowlist", map[string]any{
@@ -684,26 +677,11 @@ func (c *MatrixChannel) extractInboundMedia(
 	}
 
 	filename := matrixMediaFilename(label, mediaKind, matrixContentType(msgEvt))
-	ref := c.storeMedia(localPath, media.MediaMeta{
+	ref := channels.StoreInboundMedia(c.GetMediaStore(), "matrix", localPath, media.MediaMeta{
 		Filename:    filename,
 		ContentType: matrixContentType(msgEvt),
-		Source:      "matrix",
 	}, scope)
 	return content, []string{ref}, true
-}
-
-func (c *MatrixChannel) storeMedia(localPath string, meta media.MediaMeta, scope string) string {
-	if store := c.GetMediaStore(); store != nil {
-		ref, err := store.Store(localPath, meta, scope)
-		if err == nil {
-			return ref
-		}
-		logger.WarnCF("matrix", "Failed to store media in MediaStore, falling back to local path", map[string]any{
-			"path":  localPath,
-			"error": err.Error(),
-		})
-	}
-	return localPath
 }
 
 func (c *MatrixChannel) downloadMedia(

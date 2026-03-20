@@ -17,7 +17,6 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/identity"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/utils"
@@ -297,20 +296,6 @@ func (c *LINEChannel) processEvent(event lineEvent) {
 
 	scope := channels.BuildMediaScope("line", chatID, msg.ID)
 
-	// Helper to register a local file with the media store
-	storeMedia := func(localPath, filename string) string {
-		if store := c.GetMediaStore(); store != nil {
-			ref, err := store.Store(localPath, media.MediaMeta{
-				Filename: filename,
-				Source:   "line",
-			}, scope)
-			if err == nil {
-				return ref
-			}
-		}
-		return localPath // fallback
-	}
-
 	switch msg.Type {
 	case "text":
 		content = msg.Text
@@ -321,19 +306,37 @@ func (c *LINEChannel) processEvent(event lineEvent) {
 	case "image":
 		localPath := c.downloadContent(msg.ID, "image.jpg")
 		if localPath != "" {
-			mediaPaths = append(mediaPaths, storeMedia(localPath, "image.jpg"))
+			mediaPaths = append(mediaPaths, channels.StoreInboundMedia(
+				c.GetMediaStore(),
+				"line",
+				localPath,
+				media.MediaMeta{Filename: "image.jpg"},
+				scope,
+			))
 			content = "[image]"
 		}
 	case "audio":
 		localPath := c.downloadContent(msg.ID, "audio.m4a")
 		if localPath != "" {
-			mediaPaths = append(mediaPaths, storeMedia(localPath, "audio.m4a"))
+			mediaPaths = append(mediaPaths, channels.StoreInboundMedia(
+				c.GetMediaStore(),
+				"line",
+				localPath,
+				media.MediaMeta{Filename: "audio.m4a"},
+				scope,
+			))
 			content = "[audio]"
 		}
 	case "video":
 		localPath := c.downloadContent(msg.ID, "video.mp4")
 		if localPath != "" {
-			mediaPaths = append(mediaPaths, storeMedia(localPath, "video.mp4"))
+			mediaPaths = append(mediaPaths, channels.StoreInboundMedia(
+				c.GetMediaStore(),
+				"line",
+				localPath,
+				media.MediaMeta{Filename: "video.mp4"},
+				scope,
+			))
 			content = "[video]"
 		}
 	case "file":
@@ -381,11 +384,7 @@ func (c *LINEChannel) processEvent(event lineEvent) {
 		"preview":      utils.Truncate(content, 50),
 	})
 
-	sender := bus.SenderInfo{
-		Platform:    "line",
-		PlatformID:  senderID,
-		CanonicalID: identity.BuildCanonicalID("line", senderID),
-	}
+	sender := channels.NewSenderInfo("line", senderID, "", "")
 
 	if !c.IsAllowedSender(sender) {
 		return
