@@ -23,9 +23,7 @@
 
 name: Blog Writer
 
-on:
-  schedule:
-    - cron: '0 9 * * 1'   # Every Monday 09:00 UTC
+on:   # Every Monday 09:00 UTC
 
   workflow_dispatch:
     inputs:
