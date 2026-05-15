@@ -15,7 +15,6 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/identity"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/utils"
@@ -745,20 +744,6 @@ func (c *OneBotChannel) parseMessageSegments(
 	var mediaRefs []string
 	var replyTo string
 
-	// Helper to register a local file with the media store
-	storeFile := func(localPath, filename string) string {
-		if store != nil {
-			ref, err := store.Store(localPath, media.MediaMeta{
-				Filename: filename,
-				Source:   "onebot",
-			}, scope)
-			if err == nil {
-				return ref
-			}
-		}
-		return localPath // fallback
-	}
-
 	for _, seg := range segments {
 		segType, _ := seg["type"].(string)
 		data, _ := seg["data"].(map[string]any)
@@ -794,7 +779,13 @@ func (c *OneBotChannel) parseMessageSegments(
 						LoggerPrefix: "onebot",
 					})
 					if localPath != "" {
-						mediaRefs = append(mediaRefs, storeFile(localPath, filename))
+						mediaRefs = append(mediaRefs, channels.StoreInboundMedia(
+							store,
+							"onebot",
+							localPath,
+							media.MediaMeta{Filename: filename},
+							scope,
+						))
 						textParts = append(textParts, fmt.Sprintf("[%s]", segType))
 					}
 				}
@@ -809,7 +800,13 @@ func (c *OneBotChannel) parseMessageSegments(
 					})
 					if localPath != "" {
 						textParts = append(textParts, "[voice]")
-						mediaRefs = append(mediaRefs, storeFile(localPath, "voice.amr"))
+						mediaRefs = append(mediaRefs, channels.StoreInboundMedia(
+							store,
+							"onebot",
+							localPath,
+							media.MediaMeta{Filename: "voice.amr"},
+							scope,
+						))
 					}
 				}
 			}
@@ -847,11 +844,7 @@ func (c *OneBotChannel) handleRawEvent(raw *oneBotRawEvent) {
 	case "message":
 		if userID, err := parseJSONInt64(raw.UserID); err == nil && userID > 0 {
 			// Build minimal sender for allowlist check
-			sender := bus.SenderInfo{
-				Platform:    "onebot",
-				PlatformID:  strconv.FormatInt(userID, 10),
-				CanonicalID: identity.BuildCanonicalID("onebot", strconv.FormatInt(userID, 10)),
-			}
+			sender := channels.NewSenderInfo("onebot", strconv.FormatInt(userID, 10), "", "")
 			if !c.IsAllowedSender(sender) {
 				logger.DebugCF("onebot", "Message rejected by allowlist", map[string]any{
 					"user_id": userID,
@@ -1057,12 +1050,7 @@ func (c *OneBotChannel) handleMessage(raw *oneBotRawEvent) {
 
 	c.lastMessageID.Store(chatID, messageID)
 
-	senderInfo := bus.SenderInfo{
-		Platform:    "onebot",
-		PlatformID:  senderID,
-		CanonicalID: identity.BuildCanonicalID("onebot", senderID),
-		DisplayName: sender.Nickname,
-	}
+	senderInfo := channels.NewSenderInfo("onebot", senderID, "", sender.Nickname)
 
 	if !c.IsAllowedSender(senderInfo) {
 		logger.DebugCF("onebot", "Message rejected by allowlist (senderInfo)", map[string]any{

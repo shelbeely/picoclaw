@@ -10,7 +10,7 @@ import (
 	"github.com/ergochat/irc-go/ircmsg"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/identity"
+	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
@@ -61,13 +61,7 @@ func (c *IRCChannel) onPrivmsg(conn *ircevent.Connection, e ircmsg.Message) {
 		peer = bus.Peer{Kind: "group", ID: target}
 	}
 
-	sender := bus.SenderInfo{
-		Platform:    "irc",
-		PlatformID:  nick,
-		CanonicalID: identity.BuildCanonicalID("irc", nick),
-		Username:    nick,
-		DisplayName: nick,
-	}
+	sender := channels.NewSenderInfo("irc", nick, nick, nick)
 
 	if !c.IsAllowedSender(sender) {
 		return

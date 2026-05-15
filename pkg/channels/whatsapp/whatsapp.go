@@ -12,7 +12,6 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/identity"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
@@ -235,11 +234,7 @@ func (c *WhatsAppChannel) handleIncomingMessage(msg map[string]any) {
 		"preview": utils.Truncate(content, 50),
 	})
 
-	sender := bus.SenderInfo{
-		Platform:    "whatsapp",
-		PlatformID:  senderID,
-		CanonicalID: identity.BuildCanonicalID("whatsapp", senderID),
-	}
+	sender := channels.NewSenderInfo("whatsapp", senderID, "", "")
 	if display, ok := metadata["user_name"]; ok {
 		sender.DisplayName = display
 	}

@@ -23,7 +23,6 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/identity"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/utils"
@@ -355,11 +354,7 @@ func (c *FeishuChannel) handleMessageReceive(ctx context.Context, event *larkim.
 
 	// Check allowlist early to avoid downloading media for rejected senders.
 	// BaseChannel.HandleMessage will check again, but this avoids wasted network I/O.
-	senderInfo := bus.SenderInfo{
-		Platform:    "feishu",
-		PlatformID:  senderID,
-		CanonicalID: identity.BuildCanonicalID("feishu", senderID),
-	}
+	senderInfo := channels.NewSenderInfo("feishu", senderID, "", "")
 	if !c.IsAllowedSender(senderInfo) {
 		return nil
 	}

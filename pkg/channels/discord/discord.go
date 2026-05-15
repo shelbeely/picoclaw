@@ -17,7 +17,6 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/identity"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/utils"
@@ -322,12 +321,7 @@ func (c *DiscordChannel) handleMessage(s *discordgo.Session, m *discordgo.Messag
 	}
 
 	// Check allowlist first to avoid downloading attachments for rejected users
-	sender := bus.SenderInfo{
-		Platform:    "discord",
-		PlatformID:  m.Author.ID,
-		CanonicalID: identity.BuildCanonicalID("discord", m.Author.ID),
-		Username:    m.Author.Username,
-	}
+	sender := channels.NewSenderInfo("discord", m.Author.ID, m.Author.Username, "")
 	// Build display name
 	displayName := m.Author.Username
 	if m.Author.Discriminator != "" && m.Author.Discriminator != "0" {
@@ -393,26 +387,22 @@ func (c *DiscordChannel) handleMessage(s *discordgo.Session, m *discordgo.Messag
 	scope := channels.BuildMediaScope("discord", m.ChannelID, m.ID)
 
 	// Helper to register a local file with the media store
-	storeMedia := func(localPath, filename string) string {
-		if store := c.GetMediaStore(); store != nil {
-			ref, err := store.Store(localPath, media.MediaMeta{
-				Filename: filename,
-				Source:   "discord",
-			}, scope)
-			if err == nil {
-				return ref
-			}
-		}
-		return localPath // fallback
-	}
-
 	for _, attachment := range m.Attachments {
 		isAudio := utils.IsAudioFile(attachment.Filename, attachment.ContentType)
 
 		if isAudio {
 			localPath := c.downloadAttachment(attachment.URL, attachment.Filename)
 			if localPath != "" {
-				mediaPaths = append(mediaPaths, storeMedia(localPath, attachment.Filename))
+				mediaPaths = append(mediaPaths, channels.StoreInboundMedia(
+					c.GetMediaStore(),
+					"discord",
+					localPath,
+					media.MediaMeta{
+						Filename:    attachment.Filename,
+						ContentType: attachment.ContentType,
+					},
+					scope,
+				))
 				content = appendContent(content, fmt.Sprintf("[audio: %s]", attachment.Filename))
 			} else {
 				logger.WarnCF("discord", "Failed to download audio attachment", map[string]any{

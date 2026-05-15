@@ -31,7 +31,6 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/identity"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
@@ -377,12 +376,7 @@ func (c *WhatsAppNativeChannel) handleIncoming(evt *events.Message) {
 	}
 	peer := bus.Peer{Kind: peerKind, ID: chatID}
 	messageID := evt.Info.ID
-	sender := bus.SenderInfo{
-		Platform:    "whatsapp",
-		PlatformID:  senderID,
-		CanonicalID: identity.BuildCanonicalID("whatsapp", senderID),
-		DisplayName: evt.Info.PushName,
-	}
+	sender := channels.NewSenderInfo("whatsapp", senderID, "", evt.Info.PushName)
 
 	if !c.IsAllowedSender(sender) {
 		return
